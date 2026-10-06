@@ -1,0 +1,17 @@
+{
+  "smart_dns": {
+    "host": "dns.geohide.ru",
+    "fallback_ip": "45.155.204.190",
+    "port": 53,
+    "timeout_seconds": 3.0
+  },
+  "domains": [
+    "daily-cloudcode-pa.googleapis.com"
+  ],
+  "binary_path": "auto",
+  "healthcheck": {
+    "interval_minutes": 15,
+    "connect_timeout_seconds": 3.0,
+    "probe_port": 443
+  }
+}

@@ -1,0 +1,275 @@
+#!/usr/bin/env python3
+import sys
+import os
+import argparse
+import subprocess
+from pathlib import Path
+
+# Add project root to sys.path so core can be imported from anywhere
+ROOT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT_DIR))
+
+from core.config import Config
+from core import patcher
+from core import resolver
+from core import checker
+from core import hosts
+from core import monitor
+from core import endpoint
+
+COLOR_CYAN = "\033[36m"
+COLOR_GREEN = "\033[32m"
+COLOR_YELLOW = "\033[33m"
+COLOR_RED = "\033[31m"
+COLOR_BOLD = "\033[1m"
+COLOR_RESET = "\033[0m"
+
+
+def print_banner():
+    print(f"{COLOR_CYAN}{COLOR_BOLD}══════════════════════════════════════════════════════════════{COLOR_RESET}")
+    print(f"             {COLOR_BOLD}Antigravity Linux Bypass (v1.0){COLOR_RESET}")
+    print(f"{COLOR_CYAN}══════════════════════════════════════════════════════════════{COLOR_RESET}")
+
+
+def require_root(action_name: str):
+    if os.geteuid() != 0:
+        print(f"{COLOR_RED}[!] Ошибка: Для выполнения команды '{action_name}' требуются права root.{COLOR_RESET}")
+        print(f"    Запустите: {COLOR_BOLD}sudo {sys.argv[0]} {action_name}{COLOR_RESET}")
+        sys.exit(1)
+
+
+def cmd_on(args, config: Config):
+    require_root("on")
+    print_banner()
+
+    # Step 1: Find and patch binary
+    print(f"\n{COLOR_BOLD}[1/5] Проверка клиента Antigravity...{COLOR_RESET}")
+    bin_path = patcher.find_binary(config.binary_path)
+    if not bin_path:
+        print(f"      {COLOR_YELLOW}[WARN] Бинарник Antigravity не найден в стандартных путях.{COLOR_RESET}")
+        print(f"             Укажите путь к 'agy' в {config.path} или флагом --bin")
+    else:
+        status = patcher.get_status(bin_path)
+        size_mb = bin_path.stat().st_size / (1024 * 1024)
+        print(f"      Файл: {bin_path} ({size_mb:.1f} МБ)")
+        if status == "ALREADY_PATCHED":
+            print(f"      Статус: {COLOR_GREEN}уже пропатчен (inexigible){COLOR_RESET}")
+        elif status == "READY_TO_PATCH":
+            ok, msg = patcher.apply_patch(bin_path)
+            if ok:
+                print(f"      Статус: {COLOR_GREEN}{msg}{COLOR_RESET}")
+            else:
+                print(f"      {COLOR_RED}[ERR] {msg}{COLOR_RESET}")
+        else:
+            print(f"      {COLOR_YELLOW}Статус: {status} (файл оставлен без изменений){COLOR_RESET}")
+
+    # Step 2: Configure CLI endpoint (CLOUD_CODE_URL)
+    print(f"\n{COLOR_BOLD}[2/5] Настройка эндпоинта CLI (CLOUD_CODE_URL)...{COLOR_RESET}")
+    applied = endpoint.apply_endpoint()
+    if applied:
+        print(f"      {COLOR_GREEN}[✓] CLOUD_CODE_URL настроен:{COLOR_RESET}")
+        for p in applied:
+            print(f"          - {p}")
+    else:
+        print(f"      {COLOR_YELLOW}[WARN] Не удалось записать файлы окружения.{COLOR_RESET}")
+
+    # Step 3: Query SmartDNS
+    print(f"\n{COLOR_BOLD}[3/5] Запрос актуального IP сервера обхода...{COLOR_RESET}")
+    dns_server = resolver.resolve_dns_server(
+        config.smart_dns_host, fallback_ip=config.smart_dns_fallback_ip
+    )
+    print(f"      DNS-источник: {config.smart_dns_host} ({dns_server})")
+
+    primary_domain = config.domains[0]
+    candidates = resolver.query_a_records(
+        dns_server, primary_domain, port=config.smart_dns_port, timeout=config.smart_dns_timeout
+    )
+    if candidates:
+        print(f"      Получены кандидаты: {', '.join(candidates)}")
+    else:
+        print(f"      {COLOR_YELLOW}[WARN] DNS не вернул адресов, используются резервные IP...{COLOR_RESET}")
+        candidates = ["159.194.200.33", "193.233.112.67", "193.233.112.68", "193.233.112.88"]
+
+    # Step 4: Check and rank IPs
+    print(f"\n{COLOR_BOLD}[4/5] Проверка доступности прокси-узлов (TLS 443)...{COLOR_RESET}")
+    ranked = checker.rank_ips(
+        candidates, primary_domain, port=config.check_port, timeout=config.check_timeout
+    )
+    if not ranked:
+        print(f"      {COLOR_RED}[ERR] Ни один из проверенных IP не ответил на TLS-хэндшейк!{COLOR_RESET}")
+        sys.exit(1)
+
+    best_ip, latency = ranked[0]
+    print(f"      {COLOR_GREEN}[✓] Выбран лучший узел: {best_ip} (отклик: {latency:.1f} мс){COLOR_RESET}")
+    if len(ranked) > 1:
+        print(f"      Дополнительный рабочий узел: {ranked[1][0]} ({ranked[1][1]:.1f} мс)")
+
+    # Step 5: Write to /etc/hosts (single best IP per domain)
+    print(f"\n{COLOR_BOLD}[5/5] Настройка маршрутизации (/etc/hosts)...{COLOR_RESET}")
+    entries = [(best_ip, domain) for domain in config.domains]
+    ok, msg = hosts.set_entries(entries)
+    if ok:
+        print(f"      {COLOR_GREEN}[✓] {best_ip} -> {primary_domain} прописан в /etc/hosts{COLOR_RESET}")
+    else:
+        print(f"      {COLOR_RED}[ERR] {msg}{COLOR_RESET}")
+        sys.exit(1)
+
+    # Save state
+    monitor.save_state(
+        config,
+        {
+            "last_ip": best_ip,
+            "latency_ms": latency,
+            "domains": config.domains,
+            "enabled": True,
+        },
+    )
+
+    print(f"\n{COLOR_CYAN}{COLOR_BOLD}══════════════════════════════════════════════════════════════{COLOR_RESET}")
+    print(f"{COLOR_GREEN}{COLOR_BOLD}[✓] Обход активирован! Antigravity CLI готов к работе.{COLOR_RESET}")
+    print(f"{COLOR_CYAN}══════════════════════════════════════════════════════════════{COLOR_RESET}")
+
+
+def cmd_off(args, config: Config):
+    require_root("off")
+    print_banner()
+
+    print(f"\n[*] Отключение обхода в /etc/hosts...")
+    ok, msg = hosts.clear_entries()
+    if ok:
+        print(f"{COLOR_GREEN}[✓] Записи обхода удалены из /etc/hosts.{COLOR_RESET}")
+        print(f"{COLOR_GREEN}[✓] DNS-кэш сброшен. Система полностью чистая.{COLOR_RESET}")
+    else:
+        print(f"{COLOR_RED}[ERR] {msg}{COLOR_RESET}")
+
+    print(f"\n[*] Удаление файлов конфигурации CLOUD_CODE_URL...")
+    removed = endpoint.remove_endpoint()
+    if removed:
+        for p in removed:
+            print(f"{COLOR_GREEN}[✓] Удалён: {p}{COLOR_RESET}")
+    else:
+        print(f"    Файлы окружения не найдены.")
+
+    state = monitor.load_state(config)
+    state["enabled"] = False
+    monitor.save_state(config, state)
+
+
+def cmd_status(args, config: Config):
+    print_banner()
+
+    print(f"\n{COLOR_BOLD}1. Клиент Antigravity:{COLOR_RESET}")
+    bin_path = patcher.find_binary(config.binary_path)
+    if bin_path:
+        st = patcher.get_status(bin_path)
+        color = COLOR_GREEN if st == "ALREADY_PATCHED" else COLOR_YELLOW
+        print(f"   Путь: {bin_path}")
+        print(f"   Статус патча: {color}{st}{COLOR_RESET}")
+    else:
+        print(f"   {COLOR_YELLOW}Бинарник не найден в стандартных путях{COLOR_RESET}")
+
+    print(f"\n{COLOR_BOLD}2. Эндпоинт CLI (CLOUD_CODE_URL):{COLOR_RESET}")
+    has_ep, ep_desc = endpoint.get_status()
+    color_ep = COLOR_GREEN if has_ep else COLOR_YELLOW
+    print(f"   Статус: {color_ep}{ep_desc}{COLOR_RESET}")
+
+    print(f"\n{COLOR_BOLD}3. Маршрутизация в /etc/hosts:{COLOR_RESET}")
+    entries = hosts.get_active_entries()
+    if entries:
+        print(f"   Статус: {COLOR_GREEN}АКТИВЕН{COLOR_RESET}")
+        for ip, domain in entries:
+            print(f"   - {ip} -> {domain}")
+    else:
+        print(f"   Статус: {COLOR_YELLOW}ОТКЛЮЧЕН (записей нет){COLOR_RESET}")
+
+    if entries:
+        primary_ip = entries[0][0]
+        primary_domain = entries[0][1]
+        print(f"\n{COLOR_BOLD}4. Проверка текущего узла ({primary_ip}):{COLOR_RESET}")
+        alive, lat, detail = checker.test_ip(primary_ip, primary_domain, port=config.check_port)
+        if alive:
+            print(f"   Соединение: {COLOR_GREEN}ДОСТУПЕН ({lat:.1f} мс, {detail}){COLOR_RESET}")
+        else:
+            print(f"   Соединение: {COLOR_RED}НЕ ОТВЕЧАЕТ ({detail}){COLOR_RESET}")
+            print(f"   {COLOR_YELLOW}Рекомендация: запустите 'sudo {sys.argv[0]} check'{COLOR_RESET}")
+
+    # Check systemd timer if systemd is available
+    print(f"\n{COLOR_BOLD}5. Мониторинг (systemd-timer):{COLOR_RESET}")
+    timer_active = False
+    try:
+        res = subprocess.run(
+            ["systemctl", "is-active", "ag-check.timer"],
+            capture_output=True,
+            text=True,
+        )
+        if res.stdout.strip() == "active":
+            timer_active = True
+    except Exception:
+        pass
+
+    if timer_active:
+        print(f"   Таймер ag-check: {COLOR_GREEN}АКТИВЕН (проверка каждые {config.check_interval_minutes} мин){COLOR_RESET}")
+    else:
+        print(f"   Таймер ag-check: {COLOR_YELLOW}не запущен (ручной режим){COLOR_RESET}")
+
+
+def cmd_check(args, config: Config):
+    require_root("check")
+    interactive = not args.quiet and not args.non_interactive
+    status, msg = monitor.check_and_heal(config, interactive=interactive, quiet=args.quiet)
+    if not args.quiet:
+        if status in ("HEALTHY", "HEALED"):
+            print(f"{COLOR_GREEN}[✓] {msg}{COLOR_RESET}")
+        else:
+            print(f"{COLOR_YELLOW}[!] {msg}{COLOR_RESET}")
+
+
+def cmd_unpatch(args, config: Config):
+    require_root("unpatch")
+    bin_path = patcher.find_binary(config.binary_path)
+    if not bin_path:
+        print(f"{COLOR_RED}[ERR] Бинарник не найден.{COLOR_RESET}")
+        sys.exit(1)
+
+    ok, msg = patcher.restore_backup(bin_path)
+    if ok:
+        print(f"{COLOR_GREEN}[✓] {msg}{COLOR_RESET}")
+    else:
+        print(f"{COLOR_RED}[ERR] {msg}{COLOR_RESET}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Antigravity Linux Bypass Tool")
+    parser.add_argument("--config", "-c", type=str, help="Путь к кастомному config.json")
+    subparsers = parser.add_subparsers(dest="command", help="Команда для выполнения")
+
+    subparsers.add_parser("on", help="Включить обход")
+    subparsers.add_parser("off", help="Выключить обход")
+    subparsers.add_parser("status", help="Показать статус")
+    p_check = subparsers.add_parser("check", help="Проверить здоровье текущего IP и обновить при падении")
+    p_check.add_argument("--quiet", "-q", action="store_true", help="Тихий режим")
+    p_check.add_argument("--non-interactive", action="store_true", help="Не запрашивать подтверждение при смене IP")
+    subparsers.add_parser("unpatch", help="Восстановить оригинальный бинарник из .bak")
+
+    args = parser.parse_args()
+
+    cfg_path = Path(args.config) if args.config else None
+    config = Config(cfg_path)
+
+    cmd = args.command or "status"
+    if cmd == "on":
+        cmd_on(args, config)
+    elif cmd == "off":
+        cmd_off(args, config)
+    elif cmd == "status":
+        cmd_status(args, config)
+    elif cmd == "check":
+        cmd_check(args, config)
+    elif cmd == "unpatch":
+        cmd_unpatch(args, config)
+    else:
+        parser.print_help()
+
+
+if __name__ == "__main__":
+    main()
