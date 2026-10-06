@@ -17,6 +17,8 @@ DEFAULT_CONFIG = {
         "interval_minutes": 15,
         "connect_timeout_seconds": 2.5,
         "probe_port": 443,
+        "retries": 3,
+        "retry_delay_seconds": 1.0,
     }
 }
 
@@ -83,6 +85,14 @@ class Config:
     @property
     def check_interval_minutes(self) -> int:
         return int(self.data.get("healthcheck", {}).get("interval_minutes", 15))
+
+    @property
+    def check_retries(self) -> int:
+        return int(self.data.get("healthcheck", {}).get("retries", 3))
+
+    @property
+    def check_retry_delay(self) -> float:
+        return float(self.data.get("healthcheck", {}).get("retry_delay_seconds", 1.0))
 
     @property
     def state_file(self) -> Path:

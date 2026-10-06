@@ -119,3 +119,7 @@ def get_status() -> tuple[bool, str]:
         return True, f"В /etc/profile.d/antigravity.sh"
 
     return False, "Не настроен (клиент будет использовать дефолтный заблокированный адрес)"
+
+
+def get_export_command(url: str = DEFAULT_ENDPOINT) -> str:
+    return f'export CLOUD_CODE_URL="{url}"'

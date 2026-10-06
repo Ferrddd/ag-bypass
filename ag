@@ -63,6 +63,12 @@ def cmd_on(args, config: Config):
         else:
             print(f"      {COLOR_YELLOW}Статус: {status} (файл оставлен без изменений){COLOR_RESET}")
 
+        if patcher.is_binary_running(bin_path):
+            pids = patcher.get_running_pids(bin_path)
+            pids_str = ", ".join(str(p) for p in pids)
+            print(f"      {COLOR_YELLOW}[WARN] Обнаружен запущенный процесс agy (PID: {pids_str}).{COLOR_RESET}")
+            print(f"             Рекомендуется перезапустить клиент Antigravity для применения изменений.")
+
     # Step 2: Configure CLI endpoint (CLOUD_CODE_URL)
     print(f"\n{COLOR_BOLD}[2/5] Настройка эндпоинта CLI (CLOUD_CODE_URL)...{COLOR_RESET}")
     applied = endpoint.apply_endpoint()
@@ -127,7 +133,9 @@ def cmd_on(args, config: Config):
 
     print(f"\n{COLOR_CYAN}{COLOR_BOLD}══════════════════════════════════════════════════════════════{COLOR_RESET}")
     print(f"{COLOR_GREEN}{COLOR_BOLD}[✓] Обход активирован! Antigravity CLI готов к работе.{COLOR_RESET}")
-    print(f"{COLOR_CYAN}══════════════════════════════════════════════════════════════{COLOR_RESET}")
+    print(f"    Чтобы применить переменную в текущей сессии шелла, выполните:")
+    print(f"    {COLOR_BOLD}eval $({sys.argv[0]} env){COLOR_RESET}")
+    print(f"{COLOR_CYAN}{COLOR_BOLD}══════════════════════════════════════════════════════════════{COLOR_RESET}")
 
 
 def cmd_off(args, config: Config):
@@ -156,45 +164,29 @@ def cmd_off(args, config: Config):
 
 
 def cmd_status(args, config: Config):
-    print_banner()
-
-    print(f"\n{COLOR_BOLD}1. Клиент Antigravity:{COLOR_RESET}")
     bin_path = patcher.find_binary(config.binary_path)
-    if bin_path:
-        st = patcher.get_status(bin_path)
-        color = COLOR_GREEN if st == "ALREADY_PATCHED" else COLOR_YELLOW
-        print(f"   Путь: {bin_path}")
-        print(f"   Статус патча: {color}{st}{COLOR_RESET}")
-    else:
-        print(f"   {COLOR_YELLOW}Бинарник не найден в стандартных путях{COLOR_RESET}")
+    bin_status = patcher.get_status(bin_path) if bin_path else "NOT_FOUND"
+    bin_running = patcher.is_binary_running(bin_path) if bin_path else False
+    pids = patcher.get_running_pids(bin_path) if bin_path else []
 
-    print(f"\n{COLOR_BOLD}2. Эндпоинт CLI (CLOUD_CODE_URL):{COLOR_RESET}")
     has_ep, ep_desc = endpoint.get_status()
-    color_ep = COLOR_GREEN if has_ep else COLOR_YELLOW
-    print(f"   Статус: {color_ep}{ep_desc}{COLOR_RESET}")
-
-    print(f"\n{COLOR_BOLD}3. Маршрутизация в /etc/hosts:{COLOR_RESET}")
     entries = hosts.get_active_entries()
-    if entries:
-        print(f"   Статус: {COLOR_GREEN}АКТИВЕН{COLOR_RESET}")
-        for ip, domain in entries:
-            print(f"   - {ip} -> {domain}")
-    else:
-        print(f"   Статус: {COLOR_YELLOW}ОТКЛЮЧЕН (записей нет){COLOR_RESET}")
 
+    node_info = None
     if entries:
         primary_ip = entries[0][0]
         primary_domain = entries[0][1]
-        print(f"\n{COLOR_BOLD}4. Проверка текущего узла ({primary_ip}):{COLOR_RESET}")
-        alive, lat, detail = checker.test_ip(primary_ip, primary_domain, port=config.check_port)
-        if alive:
-            print(f"   Соединение: {COLOR_GREEN}ДОСТУПЕН ({lat:.1f} мс, {detail}){COLOR_RESET}")
-        else:
-            print(f"   Соединение: {COLOR_RED}НЕ ОТВЕЧАЕТ ({detail}){COLOR_RESET}")
-            print(f"   {COLOR_YELLOW}Рекомендация: запустите 'sudo {sys.argv[0]} check'{COLOR_RESET}")
+        alive, lat, detail = checker.test_ip_with_retries(
+            primary_ip, primary_domain, port=config.check_port, retries=1
+        )
+        node_info = {
+            "ip": primary_ip,
+            "domain": primary_domain,
+            "alive": alive,
+            "latency_ms": lat if alive else 0.0,
+            "detail": detail,
+        }
 
-    # Check systemd timer if systemd is available
-    print(f"\n{COLOR_BOLD}5. Мониторинг (systemd-timer):{COLOR_RESET}")
     timer_active = False
     try:
         res = subprocess.run(
@@ -207,10 +199,134 @@ def cmd_status(args, config: Config):
     except Exception:
         pass
 
+    if getattr(args, "json", False):
+        import json
+        status_data = {
+            "binary": {
+                "path": str(bin_path) if bin_path else None,
+                "status": bin_status,
+                "running": bin_running,
+                "pids": pids,
+            },
+            "endpoint": {
+                "configured": has_ep,
+                "detail": ep_desc,
+            },
+            "hosts": {
+                "active": len(entries) > 0,
+                "entries": [{"ip": ip, "domain": dom} for ip, dom in entries],
+            },
+            "active_node": node_info,
+            "timer": {
+                "active": timer_active,
+                "interval_minutes": config.check_interval_minutes,
+            },
+        }
+        print(json.dumps(status_data, indent=2, ensure_ascii=False))
+        return
+
+    print_banner()
+
+    print(f"\n{COLOR_BOLD}1. Клиент Antigravity:{COLOR_RESET}")
+    if bin_path:
+        color = COLOR_GREEN if bin_status == "ALREADY_PATCHED" else COLOR_YELLOW
+        print(f"   Путь: {bin_path}")
+        print(f"   Статус патча: {color}{bin_status}{COLOR_RESET}")
+        if bin_running:
+            pids_str = ", ".join(str(p) for p in pids)
+            print(f"   Процесс: {COLOR_GREEN}запущен (PID: {pids_str}){COLOR_RESET}")
+        else:
+            print(f"   Процесс: не запущен")
+    else:
+        print(f"   {COLOR_YELLOW}Бинарник не найден в стандартных путях{COLOR_RESET}")
+
+    print(f"\n{COLOR_BOLD}2. Эндпоинт CLI (CLOUD_CODE_URL):{COLOR_RESET}")
+    color_ep = COLOR_GREEN if has_ep else COLOR_YELLOW
+    print(f"   Статус: {color_ep}{ep_desc}{COLOR_RESET}")
+
+    print(f"\n{COLOR_BOLD}3. Маршрутизация в /etc/hosts:{COLOR_RESET}")
+    if entries:
+        print(f"   Статус: {COLOR_GREEN}АКТИВЕН{COLOR_RESET}")
+        for ip, domain in entries:
+            print(f"   - {ip} -> {domain}")
+    else:
+        print(f"   Статус: {COLOR_YELLOW}ОТКЛЮЧЕН (записей нет){COLOR_RESET}")
+
+    if node_info:
+        print(f"\n{COLOR_BOLD}4. Проверка текущего узла ({node_info['ip']}):{COLOR_RESET}")
+        if node_info["alive"]:
+            print(f"   Соединение: {COLOR_GREEN}ДОСТУПЕН ({node_info['latency_ms']:.1f} мс, {node_info['detail']}){COLOR_RESET}")
+        else:
+            print(f"   Соединение: {COLOR_RED}НЕ ОТВЕЧАЕТ ({node_info['detail']}){COLOR_RESET}")
+            print(f"   {COLOR_YELLOW}Рекомендация: запустите 'sudo {sys.argv[0]} check'{COLOR_RESET}")
+
+    print(f"\n{COLOR_BOLD}5. Мониторинг (systemd-timer):{COLOR_RESET}")
     if timer_active:
         print(f"   Таймер ag-check: {COLOR_GREEN}АКТИВЕН (проверка каждые {config.check_interval_minutes} мин){COLOR_RESET}")
     else:
         print(f"   Таймер ag-check: {COLOR_YELLOW}не запущен (ручной режим){COLOR_RESET}")
+
+
+def cmd_nodes(args, config: Config):
+    primary_domain = config.domains[0]
+    dns_server = resolver.resolve_dns_server(
+        config.smart_dns_host, fallback_ip=config.smart_dns_fallback_ip
+    )
+    candidates = resolver.query_a_records(
+        dns_server, primary_domain, port=config.smart_dns_port, timeout=config.smart_dns_timeout
+    )
+    if not candidates:
+        candidates = ["159.194.200.33", "193.233.112.67", "193.233.112.68", "193.233.112.88"]
+
+    active_entries = hosts.get_active_entries()
+    active_ips = {ip for ip, _ in active_entries}
+    all_ips = list(candidates)
+    for ip in active_ips:
+        if ip not in all_ips:
+            all_ips.append(ip)
+
+    node_results = checker.check_all_ips(
+        all_ips, primary_domain, port=config.check_port, timeout=config.check_timeout
+    )
+
+    if getattr(args, "json", False):
+        import json
+        output_data = []
+        for r in node_results:
+            output_data.append({
+                "ip": r["ip"],
+                "active": r["ip"] in active_ips,
+                "alive": r["ok"],
+                "latency_ms": r["latency_ms"],
+                "detail": r["detail"],
+            })
+        print(json.dumps(output_data, indent=2, ensure_ascii=False))
+        return
+
+    print_banner()
+    print(f"\n{COLOR_BOLD}Проверка доступности узлов ({primary_domain}):{COLOR_RESET}\n")
+
+    header = f"{'IP':<18} {'СТАТУС':<10} {'ОТКЛИК':<12} {'АКТИВЕН':<9} {'ДЕТАЛИ'}"
+    print(f"{COLOR_BOLD}{header}{COLOR_RESET}")
+    print("-" * 75)
+    for r in node_results:
+        is_active = r["ip"] in active_ips
+        active_mark = f"{COLOR_CYAN}* ДА{COLOR_RESET}" if is_active else "  -"
+        if r["ok"]:
+            status_str = f"{COLOR_GREEN}ONLINE{COLOR_RESET}"
+            lat_str = f"{r['latency_ms']:.1f} мс"
+        else:
+            status_str = f"{COLOR_RED}OFFLINE{COLOR_RESET}"
+            lat_str = "-"
+        detail_str = r["detail"]
+        if len(detail_str) > 30:
+            detail_str = detail_str[:27] + "..."
+        print(f"{r['ip']:<18} {status_str:<19} {lat_str:<12} {active_mark:<18} {detail_str}")
+    print("-" * 75)
+
+
+def cmd_env(args, config: Config):
+    print(endpoint.get_export_command())
 
 
 def cmd_check(args, config: Config):
@@ -245,10 +361,17 @@ def main():
 
     subparsers.add_parser("on", help="Включить обход")
     subparsers.add_parser("off", help="Выключить обход")
-    subparsers.add_parser("status", help="Показать статус")
+    p_status = subparsers.add_parser("status", help="Показать статус")
+    p_status.add_argument("--json", action="store_true", help="Вывод в формате JSON")
+
     p_check = subparsers.add_parser("check", help="Проверить здоровье текущего IP и обновить при падении")
     p_check.add_argument("--quiet", "-q", action="store_true", help="Тихий режим")
     p_check.add_argument("--non-interactive", action="store_true", help="Не запрашивать подтверждение при смене IP")
+
+    p_nodes = subparsers.add_parser("nodes", help="Проверить и сравнить все доступные узлы обхода")
+    p_nodes.add_argument("--json", action="store_true", help="Вывод в формате JSON")
+
+    subparsers.add_parser("env", help="Вывести команду экспорта CLOUD_CODE_URL для шелла (eval $(ag env))")
     subparsers.add_parser("unpatch", help="Восстановить оригинальный бинарник из .bak")
 
     args = parser.parse_args()
@@ -265,6 +388,10 @@ def main():
         cmd_status(args, config)
     elif cmd == "check":
         cmd_check(args, config)
+    elif cmd == "nodes":
+        cmd_nodes(args, config)
+    elif cmd == "env":
+        cmd_env(args, config)
     elif cmd == "unpatch":
         cmd_unpatch(args, config)
     else:

@@ -11,7 +11,9 @@
   "binary_path": "auto",
   "healthcheck": {
     "interval_minutes": 15,
-    "connect_timeout_seconds": 3.0,
-    "probe_port": 443
+    "connect_timeout_seconds": 2.5,
+    "probe_port": 443,
+    "retries": 3,
+    "retry_delay_seconds": 1.0
   }
 }

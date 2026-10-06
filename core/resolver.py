@@ -31,15 +31,21 @@ def _build_dns_query(domain: str, query_id: int) -> bytes:
     return header + question
 
 
-def _skip_dns_name(data: bytes, offset: int) -> int:
-    while offset < len(data):
+def _skip_dns_name(data: bytes, offset: int, max_steps: int = 128) -> int:
+    steps = 0
+    data_len = len(data)
+    while offset < data_len and steps < max_steps:
+        steps += 1
         length = data[offset]
         if length == 0:
             return offset + 1
-        if length >= 192:  # 0xC0 pointer
+        if (length & 0xC0) == 0xC0:  # 0xC0 pointer
             return offset + 2
-        offset += 1 + length
-    return offset
+        next_offset = offset + 1 + length
+        if next_offset > data_len:
+            return data_len
+        offset = next_offset
+    return data_len
 
 
 def _parse_dns_response(data: bytes, query_id: int) -> list[str]:
@@ -47,7 +53,11 @@ def _parse_dns_response(data: bytes, query_id: int) -> list[str]:
         return []
 
     res_id, flags, qdcount, ancount, _, _ = struct.unpack("!HHHHHH", data[:12])
-    if res_id != query_id or ancount == 0:
+    rcode = flags & 0x000F
+    is_response = bool(flags & 0x8000)
+
+    # Must match query ID, be a response, have RCODE 0 (NoError), and have at least 1 answer
+    if res_id != query_id or not is_response or rcode != 0 or ancount == 0:
         return []
 
     offset = 12
@@ -55,6 +65,8 @@ def _parse_dns_response(data: bytes, query_id: int) -> list[str]:
     for _ in range(qdcount):
         offset = _skip_dns_name(data, offset)
         offset += 4  # QTYPE (2) + QCLASS (2)
+        if offset > len(data):
+            return []
 
     ips: list[str] = []
     # Parse answers
@@ -82,18 +94,28 @@ def _parse_dns_response(data: bytes, query_id: int) -> list[str]:
 
 
 def query_a_records(
-    dns_server_ip: str, domain: str, port: int = 53, timeout: float = 3.0
+    dns_server_ip: str, domain: str, port: int = 53, timeout: float = 3.0, retries: int = 2
 ) -> list[str]:
-    query_id = random.randint(1, 65535)
-    packet = _build_dns_query(domain, query_id)
+    retries = max(1, retries)
+    for _ in range(retries):
+        query_id = random.randint(1, 65535)
+        packet = _build_dns_query(domain, query_id)
 
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.settimeout(timeout)
-    try:
-        sock.sendto(packet, (dns_server_ip, port))
-        data, _ = sock.recvfrom(2048)
-        return _parse_dns_response(data, query_id)
-    except Exception:
-        return []
-    finally:
-        sock.close()
+        sock = None
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.settimeout(timeout)
+            sock.sendto(packet, (dns_server_ip, port))
+            data, _ = sock.recvfrom(2048)
+            ips = _parse_dns_response(data, query_id)
+            if ips:
+                return ips
+        except Exception:
+            pass
+        finally:
+            if sock:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+    return []

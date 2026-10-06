@@ -49,9 +49,14 @@ def check_and_heal(
     if not primary_ip:
         primary_ip = active_entries[0][0]
 
-    # Test current primary IP
-    alive, latency, detail = checker.test_ip(
-        primary_ip, primary_domain, port=config.check_port, timeout=config.check_timeout
+    # Test current primary IP with retries
+    alive, latency, detail = checker.test_ip_with_retries(
+        primary_ip,
+        primary_domain,
+        port=config.check_port,
+        timeout=config.check_timeout,
+        retries=config.check_retries,
+        delay=config.check_retry_delay,
     )
     if alive:
         state = load_state(config)

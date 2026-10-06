@@ -5,25 +5,55 @@ from pathlib import Path
 SIG_ORIGINAL = b"ineligible"
 SIG_PATCHED = b"inexigible"
 
-STANDARD_CANDIDATES = [
-    Path.home() / ".local/bin/agy",
-    Path.home() / ".local/share/agy/bin/agy",
-    Path("/usr/local/bin/agy"),
-    Path("/usr/bin/agy"),
-]
+
+def _get_real_user_home() -> Path:
+    sudo_user = os.environ.get("SUDO_USER")
+    if sudo_user:
+        try:
+            import pwd
+            return Path(pwd.getpwnam(sudo_user).pw_dir)
+        except Exception:
+            pass
+    return Path.home()
 
 
 def find_binary(configured_path: str = "auto") -> Path | None:
+    real_home = _get_real_user_home()
+
     if configured_path and configured_path != "auto":
-        p = Path(os.path.expanduser(configured_path)).resolve()
+        if configured_path.startswith("~"):
+            expanded = str(real_home) + configured_path[1:]
+            p = Path(expanded).resolve()
+        else:
+            p = Path(os.path.expanduser(configured_path)).resolve()
         if p.is_file():
             return p
         return None
 
-    for candidate in STANDARD_CANDIDATES:
-        cand = candidate.resolve()
-        if cand.is_file():
-            return cand
+    candidates: list[Path] = [
+        real_home / ".local/bin/agy",
+        real_home / ".local/share/agy/bin/agy",
+    ]
+    if Path.home() != real_home:
+        candidates.extend([
+            Path.home() / ".local/bin/agy",
+            Path.home() / ".local/share/agy/bin/agy",
+        ])
+
+    candidates.extend([
+        Path("/usr/local/bin/agy"),
+        Path("/usr/bin/agy"),
+        Path("/opt/antigravity/bin/agy"),
+        Path("/opt/agy/agy"),
+    ])
+
+    for candidate in candidates:
+        try:
+            cand = candidate.resolve()
+            if cand.is_file():
+                return cand
+        except Exception:
+            pass
 
     which_agy = shutil.which("agy")
     if which_agy:
@@ -32,6 +62,42 @@ def find_binary(configured_path: str = "auto") -> Path | None:
             return p
 
     return None
+
+
+def get_running_pids(bin_path: Path) -> list[int]:
+    """Find PIDs of running processes that execute bin_path."""
+    pids = []
+    try:
+        target = bin_path.resolve()
+    except Exception:
+        target = bin_path
+
+    proc_dir = Path("/proc")
+    if not proc_dir.is_dir():
+        return []
+
+    try:
+        entries = list(proc_dir.iterdir())
+    except Exception:
+        return []
+
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            exe_link = entry / "exe"
+            if exe_link.is_symlink():
+                resolved = exe_link.resolve()
+                if resolved == target:
+                    pids.append(int(entry.name))
+        except (PermissionError, FileNotFoundError, OSError):
+            continue
+    return pids
+
+
+def is_binary_running(bin_path: Path) -> bool:
+    """Check if the binary is currently running."""
+    return len(get_running_pids(bin_path)) > 0
 
 
 def get_status(bin_path: Path) -> str:
