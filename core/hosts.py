@@ -1,55 +1,48 @@
-import os
 import errno
+import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
 
-TAG_BEGIN = "# BEGIN AG_BYPASS"
-TAG_END = "# END AG_BYPASS"
-DEFAULT_HOSTS_PATH = Path("/etc/hosts")
-BACKUP_SUFFIX = ".ag_bak"
+TAG_BEGIN, TAG_END = "# BEGIN AG_BYPASS", "# END AG_BYPASS"
+DEFAULT_HOSTS_PATH, BACKUP_SUFFIX = Path("/etc/hosts"), ".ag_bak"
 
 
 def flush_dns_cache() -> bool:
-    flushed = False
-    if shutil.which("resolvectl"):
-        res = subprocess.run(["resolvectl", "flush-caches"], capture_output=True)
-        if res.returncode == 0:
-            flushed = True
-    elif shutil.which("systemd-resolve"):
-        res = subprocess.run(["systemd-resolve", "--flush-caches"], capture_output=True)
-        if res.returncode == 0:
-            flushed = True
-    return flushed
+    cmd = ["resolvectl", "flush-caches"] if shutil.which("resolvectl") else (
+        ["systemd-resolve", "--flush-caches"] if shutil.which("systemd-resolve") else None
+    )
+    return bool(cmd and subprocess.run(cmd, capture_output=True).returncode == 0)
+
+
+def _apply_perms(path: Path, st: os.stat_result):
+    try:
+        os.chmod(path, st.st_mode)
+        os.chown(path, st.st_uid, st.st_gid)
+    except Exception:
+        pass
 
 
 def create_backup(hosts_path: Path = DEFAULT_HOSTS_PATH) -> Path | None:
-    """Create a backup of hosts file if backup does not already exist."""
-    backup_path = hosts_path.with_name(hosts_path.name + BACKUP_SUFFIX)
-    if not backup_path.exists() and hosts_path.exists():
+    bak = hosts_path.with_name(hosts_path.name + BACKUP_SUFFIX)
+    if not bak.exists() and hosts_path.exists():
         try:
-            shutil.copy2(hosts_path, backup_path)
-            return backup_path
+            return shutil.copy2(hosts_path, bak)
         except Exception:
             pass
     return None
 
 
 def restore_backup(hosts_path: Path = DEFAULT_HOSTS_PATH) -> tuple[bool, str]:
-    """Restore hosts file from backup."""
-    backup_path = hosts_path.with_name(hosts_path.name + BACKUP_SUFFIX)
-    if not backup_path.is_file():
-        return False, f"Бэкап не найден: {backup_path}"
+    bak = hosts_path.with_name(hosts_path.name + BACKUP_SUFFIX)
+    if not bak.is_file():
+        return False, f"Бэкап не найден: {bak}"
     try:
-        st = backup_path.stat()
-        shutil.copy2(backup_path, hosts_path)
-        try:
-            os.chmod(hosts_path, st.st_mode)
-            os.chown(hosts_path, st.st_uid, st.st_gid)
-        except Exception:
-            pass
+        shutil.copy2(bak, hosts_path)
+        _apply_perms(hosts_path, bak.stat())
         flush_dns_cache()
-        return True, f"Файл hosts успешно восстановлен из {backup_path.name}"
+        return True, f"Файл hosts успешно восстановлен из {bak.name}"
     except Exception as e:
         return False, f"Ошибка восстановления hosts: {e}"
 
@@ -57,146 +50,64 @@ def restore_backup(hosts_path: Path = DEFAULT_HOSTS_PATH) -> tuple[bool, str]:
 def get_active_entries(hosts_path: Path = DEFAULT_HOSTS_PATH) -> list[tuple[str, str]]:
     if not hosts_path.is_file():
         return []
-
     try:
-        content = hosts_path.read_text(encoding="utf-8")
+        m = re.search(rf"{TAG_BEGIN}\n?(.*?){TAG_END}", hosts_path.read_text(encoding="utf-8"), re.DOTALL)
+        return [
+            (p[0], p[1])
+            for line in (m.group(1).splitlines() if m else [])
+            if (p := line.strip().split()) and len(p) >= 2 and not p[0].startswith("#")
+        ]
     except Exception:
         return []
 
-    lines = content.splitlines()
-    in_block = False
-    entries: list[tuple[str, str]] = []
 
-    for line in lines:
-        stripped = line.strip()
-        if stripped == TAG_BEGIN:
-            in_block = True
-            continue
-        if stripped == TAG_END:
-            in_block = False
-            continue
-        if in_block and stripped and not stripped.startswith("#"):
-            parts = stripped.split()
-            if len(parts) >= 2:
-                ip = parts[0]
-                domain = parts[1]
-                entries.append((ip, domain))
-
-    return entries
-
-
-def _strip_block(lines: list[str]) -> list[str]:
-    out: list[str] = []
-    in_block = False
-    for line in lines:
-        stripped = line.strip()
-        if stripped == TAG_BEGIN:
-            in_block = True
-            continue
-        if stripped == TAG_END:
-            in_block = False
-            continue
-        if not in_block:
-            out.append(line)
-    return out
-
-
-def _write_hosts_safely(hosts_path: Path, new_content: str) -> None:
-    # 1. Create backup before modification if not present
+def _write_safely(hosts_path: Path, content: str) -> None:
     create_backup(hosts_path)
-
-    # 2. Preserve permissions and ownership
     st = hosts_path.stat()
-    mode = st.st_mode
-    uid = st.st_uid
-    gid = st.st_gid
-
-    tmp_path = hosts_path.with_name(f"{hosts_path.name}.{os.getpid()}.tmp")
+    tmp = hosts_path.with_name(f"{hosts_path.name}.{os.getpid()}.tmp")
     try:
-        tmp_path.write_text(new_content, encoding="utf-8")
+        tmp.write_text(content, encoding="utf-8")
+        _apply_perms(tmp, st)
         try:
-            os.chmod(tmp_path, mode)
-            os.chown(tmp_path, uid, gid)
-        except Exception:
-            pass
-
-        try:
-            os.replace(tmp_path, hosts_path)
-            return
+            os.replace(tmp, hosts_path)
         except OSError as e:
-            # Fallback for EBUSY (Docker/bind-mount), EXDEV (cross-filesystem), or EPERM
             if e.errno in (errno.EBUSY, errno.EXDEV, errno.EPERM, errno.EACCES):
-                with open(hosts_path, "w", encoding="utf-8") as f:
-                    f.write(new_content)
-                try:
-                    os.chmod(hosts_path, mode)
-                    os.chown(hosts_path, uid, gid)
-                except Exception:
-                    pass
-                return
-            raise
+                hosts_path.write_text(content, encoding="utf-8")
+                _apply_perms(hosts_path, st)
+            else:
+                raise
     finally:
-        if tmp_path.exists():
+        if tmp.exists():
             try:
-                tmp_path.unlink()
+                tmp.unlink()
             except Exception:
                 pass
 
 
-def set_entries(
-    entries: list[tuple[str, str]], hosts_path: Path = DEFAULT_HOSTS_PATH
-) -> tuple[bool, str]:
+def set_entries(entries: list[tuple[str, str]], hosts_path: Path = DEFAULT_HOSTS_PATH) -> tuple[bool, str]:
     if not hosts_path.is_file():
         return False, f"Файл не найден: {hosts_path}"
-
     try:
-        content = hosts_path.read_text(encoding="utf-8")
-    except Exception as e:
-        return False, f"Ошибка чтения {hosts_path}: {e}"
-
-    lines = _strip_block(content.splitlines())
-
-    # Build new block (keep single best IP per domain)
-    seen_domains: set[str] = set()
-    block_lines = [TAG_BEGIN]
-    for ip, domain in entries:
-        if domain not in seen_domains:
-            seen_domains.add(domain)
-            block_lines.append(f"{ip} {domain}")
-    block_lines.append(TAG_END)
-
-    cleaned = "\n".join(lines).rstrip()
-    new_content = (cleaned + "\n\n" if cleaned else "") + "\n".join(block_lines) + "\n"
-
-    try:
-        _write_hosts_safely(hosts_path, new_content)
+        clean = re.sub(rf"{TAG_BEGIN}.*?{TAG_END}\n?", "", hosts_path.read_text(encoding="utf-8"), flags=re.DOTALL).rstrip()
+        seen = set()
+        body = "\n".join(f"{ip} {d}" for ip, d in entries if not (d in seen or seen.add(d)))
+        _write_safely(hosts_path, (clean + "\n\n" if clean else "") + f"{TAG_BEGIN}\n{body}\n{TAG_END}\n")
+        flush_dns_cache()
+        return True, "Записи успешно обновлены в /etc/hosts"
     except Exception as e:
         return False, f"Ошибка записи {hosts_path}: {e}"
-
-    flush_dns_cache()
-    return True, "Записи успешно обновлены в /etc/hosts"
 
 
 def clear_entries(hosts_path: Path = DEFAULT_HOSTS_PATH) -> tuple[bool, str]:
     if not hosts_path.is_file():
         return False, f"Файл не найден: {hosts_path}"
-
     try:
-        content = hosts_path.read_text(encoding="utf-8")
-    except Exception as e:
-        return False, f"Ошибка чтения {hosts_path}: {e}"
-
-    if TAG_BEGIN not in content:
-        return True, "Блок обхода отсутствует в /etc/hosts"
-
-    lines = _strip_block(content.splitlines())
-    cleaned = "\n".join(lines).rstrip()
-    new_content = (cleaned + "\n") if cleaned else ""
-
-    try:
-        _write_hosts_safely(hosts_path, new_content)
+        raw = hosts_path.read_text(encoding="utf-8")
+        if TAG_BEGIN not in raw:
+            return True, "Блок обхода отсутствует в /etc/hosts"
+        clean = re.sub(rf"{TAG_BEGIN}.*?{TAG_END}\n?", "", raw, flags=re.DOTALL).rstrip()
+        _write_safely(hosts_path, (clean + "\n") if clean else "")
+        flush_dns_cache()
+        return True, "Блок обхода успешно удалён из /etc/hosts"
     except Exception as e:
         return False, f"Ошибка записи {hosts_path}: {e}"
-
-    flush_dns_cache()
-    return True, "Блок обхода успешно удалён из /etc/hosts"

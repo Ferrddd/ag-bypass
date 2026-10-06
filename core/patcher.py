@@ -1,116 +1,62 @@
 import os
+import pwd
 import shutil
 from pathlib import Path
 
-SIG_ORIGINAL = b"ineligible"
-SIG_PATCHED = b"inexigible"
+SIG_ORIGINAL, SIG_PATCHED = b"ineligible", b"inexigible"
 
 
-def _get_real_user_home() -> Path:
-    sudo_user = os.environ.get("SUDO_USER")
-    if sudo_user:
+def _user_home() -> Path:
+    if u := os.environ.get("SUDO_USER"):
         try:
-            import pwd
-            return Path(pwd.getpwnam(sudo_user).pw_dir)
+            return Path(pwd.getpwnam(u).pw_dir)
         except Exception:
             pass
     return Path.home()
 
 
-def find_binary(configured_path: str = "auto") -> Path | None:
-    real_home = _get_real_user_home()
-
-    if configured_path and configured_path != "auto":
-        if configured_path.startswith("~"):
-            expanded = str(real_home) + configured_path[1:]
-            p = Path(expanded).resolve()
-        else:
-            p = Path(os.path.expanduser(configured_path)).resolve()
-        if p.is_file():
-            return p
-        return None
-
-    candidates: list[Path] = [
-        real_home / ".local/bin/agy",
-        real_home / ".local/share/agy/bin/agy",
-    ]
-    if Path.home() != real_home:
-        candidates.extend([
-            Path.home() / ".local/bin/agy",
-            Path.home() / ".local/share/agy/bin/agy",
-        ])
-
-    candidates.extend([
-        Path("/usr/local/bin/agy"),
-        Path("/usr/bin/agy"),
-        Path("/opt/antigravity/bin/agy"),
-        Path("/opt/agy/agy"),
-    ])
-
-    for candidate in candidates:
+def find_binary(configured: str = "auto") -> Path | None:
+    home = _user_home()
+    if configured and configured != "auto":
+        p = Path(str(home) + configured[1:] if configured.startswith("~") else os.path.expanduser(configured)).resolve()
+        return p if p.is_file() else None
+    cands = [
+        home / ".local/bin/agy", home / ".local/share/agy/bin/agy",
+        Path.home() / ".local/bin/agy", Path.home() / ".local/share/agy/bin/agy",
+        Path("/usr/local/bin/agy"), Path("/usr/bin/agy"), Path("/opt/antigravity/bin/agy"), Path("/opt/agy/agy"),
+    ] + ([Path(w)] if (w := shutil.which("agy")) else [])
+    for c in cands:
         try:
-            cand = candidate.resolve()
-            if cand.is_file():
-                return cand
+            if (p := c.resolve()).is_file():
+                return p
         except Exception:
             pass
-
-    which_agy = shutil.which("agy")
-    if which_agy:
-        p = Path(which_agy).resolve()
-        if p.is_file():
-            return p
-
     return None
 
 
 def get_running_pids(bin_path: Path) -> list[int]:
-    """Find PIDs of running processes that execute bin_path."""
-    pids = []
-    try:
-        target = bin_path.resolve()
-    except Exception:
-        target = bin_path
-
-    proc_dir = Path("/proc")
-    if not proc_dir.is_dir():
-        return []
-
-    try:
-        entries = list(proc_dir.iterdir())
-    except Exception:
-        return []
-
-    for entry in entries:
-        if not entry.name.isdigit():
-            continue
-        try:
-            exe_link = entry / "exe"
-            if exe_link.is_symlink():
-                resolved = exe_link.resolve()
-                if resolved == target:
-                    pids.append(int(entry.name))
-        except (PermissionError, FileNotFoundError, OSError):
-            continue
+    target, pids, proc = bin_path.resolve(), [], Path("/proc")
+    if proc.is_dir():
+        for e in proc.iterdir():
+            if e.name.isdigit():
+                try:
+                    if (e / "exe").resolve() == target:
+                        pids.append(int(e.name))
+                except Exception:
+                    pass
     return pids
 
 
 def is_binary_running(bin_path: Path) -> bool:
-    """Check if the binary is currently running."""
-    return len(get_running_pids(bin_path)) > 0
+    return bool(get_running_pids(bin_path))
 
 
 def get_status(bin_path: Path) -> str:
     if not bin_path.is_file():
         return "FILE_NOT_FOUND"
-
     try:
-        data = bin_path.read_bytes()
-        if SIG_PATCHED in data:
-            return "ALREADY_PATCHED"
-        if SIG_ORIGINAL in data:
-            return "READY_TO_PATCH"
-        return "SIGNATURE_NOT_FOUND"
+        d = bin_path.read_bytes()
+        return "ALREADY_PATCHED" if SIG_PATCHED in d else ("READY_TO_PATCH" if SIG_ORIGINAL in d else "SIGNATURE_NOT_FOUND")
     except Exception as e:
         return f"ERROR: {e}"
 
@@ -118,62 +64,43 @@ def get_status(bin_path: Path) -> str:
 def apply_patch(bin_path: Path) -> tuple[bool, str]:
     if not bin_path.is_file():
         return False, f"Файл не найден: {bin_path}"
-
     try:
-        data = bytearray(bin_path.read_bytes())
+        d = bin_path.read_bytes()
     except Exception as e:
         return False, f"Ошибка чтения {bin_path}: {e}"
-
-    if SIG_PATCHED in data:
+    if SIG_PATCHED in d:
         return True, "Бинарник уже пропатчен (inexigible найден)"
-
-    idx = data.find(SIG_ORIGINAL)
-    if idx == -1:
+    if SIG_ORIGINAL not in d:
         return False, "Сигнатура 'ineligible' не найдена в бинарнике"
-
-    backup_path = bin_path.with_name(bin_path.name + ".bak")
-    if not backup_path.exists():
+    bak = bin_path.with_name(bin_path.name + ".bak")
+    if not bak.exists():
         try:
-            shutil.copy2(bin_path, backup_path)
+            shutil.copy2(bin_path, bak)
         except Exception as e:
-            return False, f"Не удалось создать бэкап {backup_path}: {e}"
-
-    # Replace all occurrences of ineligible -> inexigible (exact 10 bytes)
-    count = 0
-    pos = 0
-    while True:
-        pos = data.find(SIG_ORIGINAL, pos)
-        if pos == -1:
-            break
-        data[pos : pos + len(SIG_ORIGINAL)] = SIG_PATCHED
-        pos += len(SIG_PATCHED)
-        count += 1
-
-    # Write atomically
-    tmp_path = bin_path.with_name(f"{bin_path.name}.{os.getpid()}.tmp")
+            return False, f"Не удалось создать бэкап {bak}: {e}"
+    tmp = bin_path.with_name(f"{bin_path.name}.{os.getpid()}.tmp")
     try:
-        tmp_path.write_bytes(data)
-        st = os.stat(bin_path)
-        os.chmod(tmp_path, st.st_mode)
-        os.replace(tmp_path, bin_path)
+        tmp.write_bytes(d.replace(SIG_ORIGINAL, SIG_PATCHED))
+        os.chmod(tmp, bin_path.stat().st_mode)
+        os.replace(tmp, bin_path)
+        return True, f"Бинарник успешно пропатчен ({d.count(SIG_ORIGINAL)} замен, бэкап сохранён в {bak.name})"
     except Exception as e:
-        if tmp_path.exists():
-            tmp_path.unlink()
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except Exception:
+                pass
         return False, f"Ошибка записи пропатченного бинарника: {e}"
-
-    return True, f"Бинарник успешно пропатчен ({count} замен, бэкап сохранён в {backup_path.name})"
 
 
 def restore_backup(bin_path: Path) -> tuple[bool, str]:
-    backup_path = bin_path.with_name(bin_path.name + ".bak")
-    if not backup_path.is_file():
-        return False, f"Бэкап не найден: {backup_path}"
-
+    bak = bin_path.with_name(bin_path.name + ".bak")
+    if not bak.is_file():
+        return False, f"Бэкап не найден: {bak}"
     try:
-        st = os.stat(backup_path)
-        shutil.copy2(backup_path, bin_path)
-        os.chmod(bin_path, st.st_mode)
-        backup_path.unlink()
-        return True, f"Оригинальный бинарник восстановлен из {backup_path.name}"
+        shutil.copy2(bak, bin_path)
+        os.chmod(bin_path, bak.stat().st_mode)
+        bak.unlink()
+        return True, f"Оригинальный бинарник восстановлен из {bak.name}"
     except Exception as e:
         return False, f"Ошибка восстановления бэкапа: {e}"
