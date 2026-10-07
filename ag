@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import argparse
-import json
 import os
 import subprocess
 import sys
@@ -69,7 +68,7 @@ def cmd_on(args, cfg: Config):
         print(f"      {C_RED}[ERR] {msg}{C_RESET}")
         sys.exit(1)
     print(f"      {C_GREEN}[✓] {best_ip} -> {dom} прописан в /etc/hosts{C_RESET}")
-    print(f"\n{C_GREEN}{C_BOLD}[✓] Обход активирован!{C_RESET}\n    Выполните: {C_BOLD}eval $({sys.argv[0]} env){C_RESET}")
+    print(f"\n{C_GREEN}{C_BOLD}[✓] Обход активирован! Antigravity CLI готов к работе.{C_RESET}")
 
 
 def cmd_off(args, cfg: Config):
@@ -100,16 +99,6 @@ def cmd_status(args, cfg: Config):
     except Exception:
         pass
 
-    if getattr(args, "json", False):
-        print(json.dumps({
-            "binary": {"path": str(bp) if bp else None, "status": bst, "running": running, "pids": pids},
-            "endpoint": {"configured": has_ep, "detail": ep_desc},
-            "hosts": {"active": bool(entries), "entries": [{"ip": i, "domain": d} for i, d in entries]},
-            "active_node": node_info,
-            "timer": {"active": timer, "interval_minutes": cfg.check_interval_minutes},
-        }, indent=2, ensure_ascii=False))
-        return
-
     print(f"{C_CYAN}{C_BOLD}=== Antigravity Bypass Status ==={C_RESET}")
     bcol = C_GREEN if bst == "ALREADY_PATCHED" else C_YELLOW
     print(f"1. Клиент:    {bcol}{bst}{C_RESET}" + (f" (PID: {', '.join(map(str, pids))})" if running else " (не запущен)"))
@@ -133,13 +122,6 @@ def cmd_nodes(args, cfg: Config):
     all_ips = list(dict.fromkeys(cands + list(active_ips)))
     res = checker.check_all_ips(all_ips, dom, port=cfg.check_port, timeout=cfg.check_timeout)
 
-    if getattr(args, "json", False):
-        print(json.dumps([
-            {"ip": r["ip"], "active": r["ip"] in active_ips, "alive": r["ok"], "latency_ms": r["latency_ms"], "detail": r["detail"]}
-            for r in res
-        ], indent=2, ensure_ascii=False))
-        return
-
     print(f"{C_BOLD}{'IP':<18} {'СТАТУС':<10} {'ОТКЛИК':<12} {'АКТИВЕН':<9} {'ДЕТАЛИ'}{C_RESET}\n" + "-" * 75)
     for r in res:
         st = f"{C_GREEN}ONLINE{C_RESET}" if r["ok"] else f"{C_RED}OFFLINE{C_RESET}"
@@ -151,7 +133,7 @@ def cmd_nodes(args, cfg: Config):
 
 def cmd_check(args, cfg: Config):
     _req_root("check")
-    st, msg = monitor.check_and_heal(cfg, interactive=not args.quiet and not args.non_interactive, quiet=args.quiet)
+    st, msg = monitor.check_and_heal(cfg, quiet=args.quiet)
     if not args.quiet:
         col = C_GREEN if st in ("HEALTHY", "HEALED") else C_YELLOW
         print(f"{col}[{st}] {msg}{C_RESET}")
@@ -172,14 +154,10 @@ def main():
     sub = p.add_subparsers(dest="cmd")
     sub.add_parser("on", help="Включить обход")
     sub.add_parser("off", help="Выключить обход")
-    st = sub.add_parser("status", help="Показать статус")
-    st.add_argument("--json", action="store_true", help="Вывод в JSON")
+    sub.add_parser("status", help="Показать статус")
     chk = sub.add_parser("check", help="Проверить и обновить узел")
     chk.add_argument("-q", "--quiet", action="store_true", help="Тихий режим")
-    chk.add_argument("--non-interactive", action="store_true", help="Без интерактивных запросов")
-    nd = sub.add_parser("nodes", help="Проверить все узлы")
-    nd.add_argument("--json", action="store_true", help="Вывод в JSON")
-    sub.add_parser("env", help="Команда экспорта CLOUD_CODE_URL")
+    sub.add_parser("nodes", help="Проверить все узлы")
     sub.add_parser("unpatch", help="Восстановить оригинальный бинарник")
 
     args = p.parse_args()
@@ -187,7 +165,6 @@ def main():
     handlers = {
         "on": cmd_on, "off": cmd_off, "status": cmd_status,
         "check": cmd_check, "nodes": cmd_nodes,
-        "env": lambda a, c: print(endpoint.get_export_command()),
         "unpatch": cmd_unpatch,
     }
     if fn := handlers.get(args.cmd or "status"):

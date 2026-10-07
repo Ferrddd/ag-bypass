@@ -2,7 +2,7 @@ from core.config import Config
 from core import resolver, checker, hosts
 
 
-def check_and_heal(config: Config, interactive: bool = True, quiet: bool = False) -> tuple[str, str]:
+def check_and_heal(config: Config, quiet: bool = False) -> tuple[str, str]:
     entries = hosts.get_active_entries()
     if not entries:
         return "DISABLED", "Обход не включен в /etc/hosts"
@@ -30,9 +30,6 @@ def check_and_heal(config: Config, interactive: bool = True, quiet: bool = False
     new_ip, new_lat = ranked[0]
     if new_ip == cur_ip:
         return "HEALTHY", f"Узел {cur_ip} снова отвечает (задержка {new_lat:.1f} мс)"
-
-    if interactive and not quiet and input(f"[?] Сменить сервер с {cur_ip} на {new_ip}? [Y/n]: ").strip().lower() in ("n", "no"):
-        return "SKIPPED", f"Обновление отклонено (оставлен {cur_ip})"
 
     ok, msg = hosts.set_entries([(new_ip, d) for d in config.domains])
     return ("HEALED", f"Переключено с {cur_ip} на {new_ip} ({new_lat:.1f} мс)") if ok else ("ERROR", f"Ошибка записи в /etc/hosts: {msg}")
