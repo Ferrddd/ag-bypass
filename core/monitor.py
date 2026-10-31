@@ -5,7 +5,7 @@ from core import resolver, checker, hosts
 def check_and_heal(config: Config, quiet: bool = False) -> tuple[str, str]:
     entries = hosts.get_active_entries()
     if not entries:
-        return "DISABLED", "Обход не включен в /etc/hosts"
+        return "DISABLED", "Обход не включен в файле hosts"
 
     domain = config.domains[0]
     cur_ip = next((ip for ip, d in entries if d == domain), entries[0][0])
@@ -21,7 +21,7 @@ def check_and_heal(config: Config, quiet: bool = False) -> tuple[str, str]:
 
     dns_ip = resolver.resolve_dns_server(config.smart_dns_host, fallback_ip=config.smart_dns_fallback_ip)
     candidates = resolver.query_a_records(dns_ip, domain, port=config.smart_dns_port, timeout=config.smart_dns_timeout) or [
-        "193.233.112.68", "193.233.112.88", "159.194.200.33"
+        "193.233.112.68", "193.233.112.88", "159.194.200.33", "193.233.112.67"
     ]
     ranked = checker.rank_ips(candidates, domain, port=config.check_port, timeout=config.check_timeout)
     if not ranked:
@@ -32,4 +32,4 @@ def check_and_heal(config: Config, quiet: bool = False) -> tuple[str, str]:
         return "HEALTHY", f"Узел {cur_ip} снова отвечает (задержка {new_lat:.1f} мс)"
 
     ok, msg = hosts.set_entries([(new_ip, d) for d in config.domains])
-    return ("HEALED", f"Переключено с {cur_ip} на {new_ip} ({new_lat:.1f} мс)") if ok else ("ERROR", f"Ошибка записи в /etc/hosts: {msg}")
+    return ("HEALED", f"Переключено с {cur_ip} на {new_ip} ({new_lat:.1f} мс)") if ok else ("ERROR", f"Ошибка записи в hosts: {msg}")

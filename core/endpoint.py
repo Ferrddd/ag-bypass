@@ -1,70 +1,101 @@
 import os
-import pwd
+import subprocess
 from pathlib import Path
 
 DEFAULT_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com"
-_SYS_ENV, _SYS_PROF = Path("/etc/environment.d/10-antigravity.conf"), Path("/etc/profile.d/antigravity.sh")
+VAR_NAME = "CLOUD_CODE_URL"
 
 
-def _user_file() -> Path:
-    if u := os.environ.get("SUDO_USER"):
-        try:
-            return Path(pwd.getpwnam(u).pw_dir) / ".config/environment.d/10-antigravity.conf"
-        except Exception:
-            pass
-    return Path.home() / ".config/environment.d/10-antigravity.conf"
+def _broadcast_change():
+    try:
+        import ctypes
+        HWND_BROADCAST = 0xFFFF
+        WM_SETTINGCHANGE = 0x001A
+        SMTO_ABORTIFHUNG = 0x0002
+        res = ctypes.c_ulong()
+        ctypes.windll.user32.SendMessageTimeoutW(
+            HWND_BROADCAST, WM_SETTINGCHANGE, 0, "Environment", SMTO_ABORTIFHUNG, 5000, ctypes.byref(res)
+        )
+    except Exception:
+        pass
 
 
 def apply_endpoint(url: str = DEFAULT_ENDPOINT) -> list[str]:
-    out, uf = [], _user_file()
+    applied = []
+    # Set for Current User via winreg or setx
     try:
-        uf.parent.mkdir(parents=True, exist_ok=True)
-        uf.write_text(f"CLOUD_CODE_URL={url}\n")
-        if u := os.environ.get("SUDO_USER"):
-            try:
-                os.chown(uf, pwd.getpwnam(u).pw_uid, pwd.getpwnam(u).pw_gid)
-            except Exception:
-                pass
-        out.append(str(uf))
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_SET_VALUE) as key:
+            winreg.SetValueEx(key, VAR_NAME, 0, winreg.REG_SZ, url)
+        applied.append("HKCU\\Environment")
+    except Exception:
+        try:
+            res = subprocess.run(["setx", VAR_NAME, url], capture_output=True, check=False)
+            if res.returncode == 0:
+                applied.append("setx (User)")
+        except Exception:
+            pass
+
+    # Try Machine scope if admin
+    try:
+        import winreg
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment", 0, winreg.KEY_SET_VALUE
+        ) as key:
+            winreg.SetValueEx(key, VAR_NAME, 0, winreg.REG_SZ, url)
+        applied.append("HKLM\\SYSTEM\\...\\Environment")
     except Exception:
         pass
-    if os.geteuid() == 0:
-        for t, text in [(_SYS_ENV, f"CLOUD_CODE_URL={url}\n"), (_SYS_PROF, f'export CLOUD_CODE_URL="{url}"\n')]:
-            if t.parent.exists():
-                try:
-                    t.write_text(text)
-                    if t.suffix == ".sh":
-                        t.chmod(0o755)
-                    out.append(str(t))
-                except Exception:
-                    pass
-    return out
+
+    os.environ[VAR_NAME] = url
+    _broadcast_change()
+    return applied
 
 
 def remove_endpoint() -> list[str]:
-    targets = [_user_file()] + ([_SYS_ENV, _SYS_PROF] if os.geteuid() == 0 else [])
     removed = []
-    for p in targets:
-        if p.is_file():
-            try:
-                p.unlink()
-                removed.append(str(p))
-            except Exception:
-                pass
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_SET_VALUE) as key:
+            winreg.DeleteValue(key, VAR_NAME)
+        removed.append("HKCU\\Environment")
+    except Exception:
+        pass
+
+    try:
+        import winreg
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment", 0, winreg.KEY_SET_VALUE
+        ) as key:
+            winreg.DeleteValue(key, VAR_NAME)
+        removed.append("HKLM\\SYSTEM\\...\\Environment")
+    except Exception:
+        pass
+
+    os.environ.pop(VAR_NAME, None)
+    _broadcast_change()
     return removed
 
 
 def get_status() -> tuple[bool, str]:
-    if v := os.environ.get("CLOUD_CODE_URL"):
+    if v := os.environ.get(VAR_NAME):
         return True, f"В текущей сессии: {v}"
-    for p, lbl in [(_user_file(), "~/.config/environment.d"), (_SYS_ENV, "/etc/environment.d")]:
-        if p.is_file():
+
+    try:
+        import winreg
+        for root, root_name in [
+            (winreg.HKEY_CURRENT_USER, "User"),
+            (winreg.HKEY_LOCAL_MACHINE, "System")
+        ]:
+            subkey = "Environment" if root_name == "User" else r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
             try:
-                for line in p.read_text().splitlines():
-                    if line.startswith("CLOUD_CODE_URL="):
-                        return True, f"В {lbl}: {line.split('=', 1)[1].strip('\"\'')}"
+                with winreg.OpenKey(root, subkey, 0, winreg.KEY_READ) as key:
+                    val, _ = winreg.QueryValueEx(key, VAR_NAME)
+                    if val:
+                        return True, f"В реестре Windows ({root_name}): {val}"
             except Exception:
                 pass
-    return (True, "В /etc/profile.d/antigravity.sh") if _SYS_PROF.is_file() else (
-        False, "Не настроен (клиент будет использовать дефолтный заблокированный адрес)"
-    )
+    except Exception:
+        pass
+
+    return False, "Не настроен (клиент будет использовать дефолтный заблокированный адрес)"
