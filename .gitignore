@@ -5,3 +5,6 @@ __pycache__/
 *.tmp
 .DS_Store
 .agents
+dist/
+*.zip
+*.tar.gz

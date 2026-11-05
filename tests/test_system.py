@@ -1,4 +1,5 @@
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -266,13 +267,15 @@ class TestCLINodesAndStatus(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_cli_nodes_runs_cleanly(self):
-        res = subprocess.run(["/workspace/ag", "-c", str(self.cfg_file), "nodes"], capture_output=True, text=True)
+        ag_bin = Path(__file__).resolve().parent.parent / "ag"
+        res = subprocess.run([sys.executable, str(ag_bin), "-c", str(self.cfg_file), "nodes"], capture_output=True, text=True)
         self.assertEqual(res.returncode, 0)
         self.assertIn("TLS SNI-проверка", res.stdout)
         self.assertIn("SNI СТАТУС", res.stdout)
 
     def test_cmd_nodes_table_alignment(self):
-        res = subprocess.run(["/workspace/ag", "-c", str(self.cfg_file), "nodes"], capture_output=True, text=True)
+        ag_bin = Path(__file__).resolve().parent.parent / "ag"
+        res = subprocess.run([sys.executable, str(ag_bin), "-c", str(self.cfg_file), "nodes"], capture_output=True, text=True)
         self.assertEqual(res.returncode, 0)
         import re
         lines = res.stdout.splitlines()

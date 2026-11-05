@@ -454,26 +454,32 @@ class TestCLI(unittest.TestCase):
 
     def test_cli_status(self):
         import subprocess
-        res = subprocess.run(["/workspace/ag", "status"], capture_output=True, text=True)
+        import sys
+        ag_bin = Path(__file__).resolve().parent.parent / "ag"
+        res = subprocess.run([sys.executable, str(ag_bin), "status"], capture_output=True, text=True)
         self.assertEqual(res.returncode, 0)
         self.assertIn("Antigravity Bypass Status", res.stdout)
         self.assertIn("Конфигурация:", res.stdout)
 
     def test_cli_config_arg_before_and_after(self):
         import subprocess
-        res1 = subprocess.run(["/workspace/ag", "-c", "/nonexistent.json", "status"], capture_output=True, text=True)
+        import sys
+        ag_bin = Path(__file__).resolve().parent.parent / "ag"
+        res1 = subprocess.run([sys.executable, str(ag_bin), "-c", "/nonexistent.json", "status"], capture_output=True, text=True)
         self.assertEqual(res1.returncode, 1)
         self.assertIn("Файл конфигурации не найден", res1.stdout + res1.stderr)
 
-        res2 = subprocess.run(["/workspace/ag", "status", "-c", "/nonexistent.json"], capture_output=True, text=True)
+        res2 = subprocess.run([sys.executable, str(ag_bin), "status", "-c", "/nonexistent.json"], capture_output=True, text=True)
         self.assertEqual(res2.returncode, 1)
         self.assertIn("Файл конфигурации не найден", res2.stdout + res2.stderr)
 
     def test_cli_on_validation_failure_when_empty(self):
         import subprocess
+        import sys
+        ag_bin = Path(__file__).resolve().parent.parent / "ag"
         empty_cfg = self.temp_path / "empty.json"
         empty_cfg.write_text("{}", encoding="utf-8")
-        res = subprocess.run(["/workspace/ag", "-c", str(empty_cfg), "on"], capture_output=True, text=True)
+        res = subprocess.run([sys.executable, str(ag_bin), "-c", str(empty_cfg), "on"], capture_output=True, text=True)
         self.assertEqual(res.returncode, 1)
         self.assertIn("Ошибка в конфигурации", res.stdout)
 

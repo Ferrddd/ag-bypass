@@ -1,4 +1,4 @@
-# Antigravity Bypass (ag-custom) — Linux & Windows (10/11)
+# Antigravity Bypass (ag-custom) — Windows, Linux & macOS
 
 Легковесное, полностью автономное кроссплатформенное решение для работы с **Google Antigravity** в заблокированных регионах без сторонних прокси-демонов, внешних зависимостей и привязок к HWID.
 
@@ -7,7 +7,7 @@
 ## ⚡ Особенности
 
 - **0 внешних зависимостей:** Работает «из коробки» на стандартной библиотеке Python 3 (`socket`, `ssl`, `struct`, `pathlib` и т.д.). Никаких `pip install`, `virtualenv` или компиляторов.
-- **Кроссплатформенность:** Нативная поддержка Linux (Ubuntu/Debian/Arch/Fedora) и Windows 10/11 (`hosts`, `HKCU\Environment`, `Task Scheduler`, `ipconfig /flushdns`).
+- **Кроссплатформенность:** Нативная поддержка Windows 10/11 (`hosts`, `HKCU\Environment`, `Task Scheduler`, `ipconfig /flushdns`), Linux (`/etc/hosts`, `environment.d`, `systemd`, `resolvectl`) и macOS (`/etc/hosts`, `dscacheutil`).
 - **Без локальных демонов:** Не держит в памяти постоянно работающие proxy-серверы. Система обращается к узлам обхода напрямую через быстрое SNI-проксирование.
 - **Точечная маршрутизация (Split-DNS):** Через `hosts` перенаправляются исключительно рабочие и авторизационные домены Antigravity (`daily-cloudcode-pa.googleapis.com`, `cloudcode-pa.googleapis.com`, `oauth2.googleapis.com`, `accounts.google.com` и др.). Весь остальной интернет-трафик системы идёт напрямую.
 - **Автоматический выбор лучшего узла:** Резолвит актуальные IP через SmartDNS или проверяет заданные узлы, тестирует TLS 443 хэндшейк и ранжирует узлы по минимальному пингу.
@@ -18,22 +18,48 @@
 
 ## 🚀 Быстрый старт
 
-### 1. Установка
+### Вариант A: Готовые архивы из Releases
 
-**Linux:**
+В каждом релизе на GitHub доступны 2 готовых архива:
+
+1. **Windows 10/11 (`ag-bypass-windows.zip`):**
+   - Скачайте и распакуйте архив.
+   - В открытой папке запустите **PowerShell от имени Администратора**:
+     ```powershell
+     .\install.ps1
+     ```
+
+2. **Linux & macOS (`ag-bypass-linux-macos.tar.gz`):**
+   - Скачайте и распакуйте архив:
+     ```bash
+     tar -xzf ag-bypass-linux-macos.tar.gz
+     ```
+   - Запустите скрипт установки:
+     ```bash
+     # Базовая установка (создаёт ag в ~/.local/bin/ag):
+     ./install.sh
+
+     # Или системная установка с фоновым таймером systemd:
+     sudo ./install.sh
+     ```
+
+---
+
+### Вариант B: Установка из Git-репозитория
+
+**Linux / macOS:**
 ```bash
-# Базовая установка (создаёт команду ag в ~/.local/bin/ag):
-./install.sh
-
-# Или системная установка с таймером авто-восстановления systemd:
-sudo ./install.sh
+git clone <repo-url> ag-custom
+cd ag-custom
+./install.sh       # или sudo ./install.sh
 ```
 
-**Windows (10/11) в PowerShell от имени Администратора:**
+**Windows (PowerShell от имени Администратора):**
 ```powershell
+git clone <repo-url> ag-custom
+cd ag-custom
 .\install.ps1
 ```
-Скрипт добавит `ag` в пользовательский `PATH`, настроит задачу в Планировщике задач Windows (`Task Scheduler`) для фоновой проверки с настраиваемым интервалом (по умолчанию 2 мин).
 
 ### 2. Включение обхода
 - **Linux:** `sudo ag on`

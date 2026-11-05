@@ -69,6 +69,13 @@ DEFAULT_HOSTS_PATH = Path("/etc/hosts")
 
 
 def flush_dns_cache() -> bool:
+    if sys.platform == "darwin":
+        try:
+            r1 = subprocess.run(["dscacheutil", "-flushcache"], capture_output=True, timeout=3)
+            r2 = subprocess.run(["killall", "-HUP", "mDNSResponder"], capture_output=True, timeout=3)
+            return r1.returncode == 0 or r2.returncode == 0
+        except Exception:
+            return False
     cmd = ["resolvectl", "flush-caches"] if shutil.which("resolvectl") else (
         ["systemd-resolve", "--flush-caches"] if shutil.which("systemd-resolve") else None
     )
@@ -292,7 +299,9 @@ def find_binary(configured: str | None = "auto") -> Path | None:
     cands = [
         home / ".local/bin/agy", home / ".local/share/agy/bin/agy",
         Path.home() / ".local/bin/agy", Path.home() / ".local/share/agy/bin/agy",
+        home / "Library/Application Support/antigravity/bin/agy",
         Path("/usr/local/bin/agy"), Path("/usr/bin/agy"), Path("/opt/antigravity/bin/agy"), Path("/opt/agy/agy"),
+        Path("/Applications/Antigravity.app/Contents/MacOS/agy"),
     ] + ([Path(w)] if (w := shutil.which("agy")) else [])
 
     for c in cands:
