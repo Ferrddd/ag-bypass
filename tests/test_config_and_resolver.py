@@ -23,9 +23,8 @@ class TestConfig(unittest.TestCase):
         cfg_file.write_text("{}", encoding="utf-8")
         cfg = Config(cfg_file)
         self.assertEqual(cfg.smart_dns_servers, [])
-        self.assertEqual(cfg.smart_dns_host, "")
-        self.assertEqual(cfg.smart_dns_fallback_ip, "")
         self.assertEqual(cfg.nodes, [])
+        self.assertEqual(cfg.check_interval_minutes, 2)
 
     def test_validation_fails_on_empty(self):
         cfg_file = self.temp_path / "config.json"
@@ -100,7 +99,7 @@ class TestConfig(unittest.TestCase):
         cfg_file.write_text(
             json.dumps({
                 "smart_dns": {"port": "invalid", "timeout_seconds": "invalid"},
-                "healthcheck": {"probe_port": None, "connect_timeout_seconds": "bad", "retries": "xxx"}
+                "healthcheck": {"probe_port": None, "connect_timeout_seconds": "bad", "retries": "xxx", "interval_minutes": "invalid"}
             }),
             encoding="utf-8"
         )
@@ -110,13 +109,14 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg.check_port, 443)
         self.assertEqual(cfg.check_timeout, 2.5)
         self.assertEqual(cfg.check_retries, 3)
+        self.assertEqual(cfg.check_interval_minutes, 2)
 
     def test_config_bounds_clamping(self):
         cfg_file = self.temp_path / "out_of_bounds.json"
         cfg_file.write_text(
             json.dumps({
                 "smart_dns": {"port": 70000, "timeout_seconds": -5},
-                "healthcheck": {"probe_port": -1, "connect_timeout_seconds": 0, "retries": -2, "retry_delay_seconds": -1}
+                "healthcheck": {"probe_port": -1, "connect_timeout_seconds": 0, "retries": -2, "retry_delay_seconds": -1, "interval_minutes": 0}
             }),
             encoding="utf-8"
         )
@@ -127,6 +127,31 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg.check_timeout, 2.5)
         self.assertEqual(cfg.check_retries, 3)
         self.assertEqual(cfg.check_retry_delay, 1.0)
+        self.assertEqual(cfg.check_interval_minutes, 2)
+
+    def test_config_custom_interval_minutes(self):
+        cfg_file = self.temp_path / "custom_interval.json"
+        cfg_file.write_text(
+            json.dumps({"healthcheck": {"interval_minutes": 1}}),
+            encoding="utf-8"
+        )
+        cfg = Config(cfg_file)
+        self.assertEqual(cfg.check_interval_minutes, 1)
+
+    def test_config_auth_domains_loading(self):
+        cfg_file = self.temp_path / "auth_doms.json"
+        domains = [
+            "daily-cloudcode-pa.googleapis.com",
+            "cloudcode-pa.googleapis.com",
+            "oauth2.googleapis.com",
+            "accounts.google.com",
+            "www.googleapis.com"
+        ]
+        cfg_file.write_text(json.dumps({"domains": domains}), encoding="utf-8")
+        cfg = Config(cfg_file)
+        self.assertEqual(cfg.domains, domains)
+        self.assertEqual(cfg.domains[0], "daily-cloudcode-pa.googleapis.com")
+        self.assertEqual(cfg.endpoint_url, "https://daily-cloudcode-pa.googleapis.com")
 
     def test_config_precedence(self):
         fake_user_dir = self.temp_path / "user_home"
@@ -150,12 +175,8 @@ class TestNetwork(unittest.TestCase):
         self.assertIsNone(network.resolve_target(""))
         self.assertIsNone(network.resolve_target(None))
 
-    def test_resolve_dns_server_fallback(self):
-        self.assertEqual(network.resolve_dns_server("", "1.1.1.1"), "1.1.1.1")
-        self.assertEqual(network.resolve_dns_server(None, "1.1.1.1"), "1.1.1.1")
-        self.assertIsNone(network.resolve_dns_server("", ""))
-        self.assertIsNone(network.resolve_dns_server(None, None))
-        self.assertIsNone(network.resolve_dns_server("invalid.host.nonexistent.tld", ""))
+    def test_resolve_dns_server_removed(self):
+        self.assertFalse(hasattr(network, "resolve_dns_server"))
 
     def test_query_a_records_empty_inputs(self):
         self.assertEqual(network.query_a_records(None, "google.com"), [])

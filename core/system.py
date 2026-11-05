@@ -10,6 +10,13 @@ from pathlib import Path
 # Context & Permissions
 # =====================================================================
 
+def is_admin() -> bool:
+    try:
+        return os.geteuid() == 0
+    except Exception:
+        return False
+
+
 def user_home() -> Path:
     if u := os.environ.get("SUDO_USER"):
         try:
@@ -336,3 +343,20 @@ def restore_backup(bin_path: Path) -> tuple[bool, str]:
             except Exception:
                 pass
         return False, f"Ошибка восстановления бэкапа: {e}"
+
+
+# =====================================================================
+# Background Timer
+# =====================================================================
+
+def is_timer_active() -> bool:
+    try:
+        res = subprocess.run(
+            ["systemctl", "is-active", "ag-check.timer"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        return res.stdout.strip() == "active"
+    except Exception:
+        return False

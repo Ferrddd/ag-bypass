@@ -15,7 +15,7 @@ C_CYAN, C_GREEN, C_YELLOW, C_RED, C_BOLD, C_RESET = (
 
 
 def _req_root(action: str):
-    if os.geteuid() != 0:
+    if not system.is_admin():
         print(f"{C_RED}[!] Ошибка: Для команды '{action}' требуются права root.{C_RESET}")
         print(f"    Запустите: {C_BOLD}sudo {sys.argv[0]} {action}{C_RESET}")
         sys.exit(1)
@@ -128,11 +128,7 @@ def cmd_status(args, cfg: Config):
         safe_detail = detail.replace("\r", " ").replace("\n", " ").strip()
         node_info = {"ip": ip, "domain": dom, "alive": alive, "latency_ms": lat if alive else 0.0, "detail": safe_detail}
 
-    timer = False
-    try:
-        timer = subprocess.run(["systemctl", "is-active", "ag-check.timer"], capture_output=True, text=True).stdout.strip() == "active"
-    except Exception:
-        pass
+    timer = system.is_timer_active()
 
     print(f"{C_CYAN}{C_BOLD}=== Antigravity Bypass Status ==={C_RESET}")
     print(f"Конфигурация: {cfg.path}" + ("" if cfg.exists else f" {C_YELLOW}(файл не найден){C_RESET}"))

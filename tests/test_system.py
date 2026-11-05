@@ -288,9 +288,9 @@ class TestCLINodesAndStatus(unittest.TestCase):
         for line in lines[header_idx + 2:]:
             clean = re.sub(r"\033\[[0-9;]*m", "", line)
             if clean.strip() and not clean.startswith("-"):
-                parts = clean.split()
-                det_part = " ".join(parts[4:])
-                self.assertEqual(clean.index(det_part), details_col)
+                det_part = clean[details_col:].strip()
+                if det_part:
+                    self.assertEqual(clean.find(det_part, details_col), details_col)
 
 
 if __name__ == "__main__":

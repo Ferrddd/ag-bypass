@@ -26,10 +26,6 @@ def resolve_target(target: str | None) -> str | None:
         return None
 
 
-def resolve_dns_server(host_or_ip: str | None = None, fallback_ip: str | None = None) -> str | None:
-    return resolve_target(host_or_ip) or resolve_target(fallback_ip)
-
-
 def _skip_dns_name(data: bytes, off: int, max_steps: int = 128) -> int:
     steps = 0
     while off < len(data) and steps < max_steps:
@@ -151,9 +147,7 @@ class ResolutionResult:
 
 
 def get_candidate_ips(config, domain: str) -> tuple[list[str], ResolutionResult]:
-    servers = getattr(config, "smart_dns_servers", None) or [
-        s for s in (getattr(config, "smart_dns_host", ""), getattr(config, "smart_dns_fallback_ip", "")) if s
-    ]
+    servers = getattr(config, "smart_dns_servers", []) or []
     dns_results = query_all_dns_servers(
         servers, domain, port=getattr(config, "smart_dns_port", 53), timeout=getattr(config, "smart_dns_timeout", 3.0)
     )
