@@ -77,14 +77,14 @@ jobs:
           prerelease: ${{ github.event.inputs.prerelease || false }}
           generate_release_notes: true
           body: |
-            ## 📦 Релизные архивы / Release Assets
+            ## Релизные архивы
 
             В этот релиз включены 2 готовых архива для поддерживаемых платформ:
 
-            ### 🪟 Windows (10 / 11)
+            ### Windows (10 / 11)
             - **Файл:** `ag-bypass-windows.zip`
             - **Установка:**
-              1. Скачайте и распакуйте архив в удобную папку.
+              1. Скачайте и распакуйте архив.
               2. Откройте **PowerShell от имени Администратора** в папке проекта.
               3. Выполните:
                  ```powershell
@@ -97,14 +97,10 @@ jobs:
 
             ---
 
-            ### 🐧 🍏 Linux / macOS
+            ### Linux / macOS
             - **Файл:** `ag-bypass-linux-macos.tar.gz`
             - **Установка:**
               1. Скачайте и распакуйте архив:
-                 ```bash
-                 tar -xzf ag-bypass-linux-macos.tar.gz
-                 cd ag-bypass-linux-macos  # либо папка, куда распаковали
-                 ```
               2. Установите:
                  ```bash
                  ./install.sh       # базовая установка в ~/.local/bin/ag
@@ -118,7 +114,7 @@ jobs:
 
             ---
 
-            ### 🔐 Контрольные суммы (SHA-256)
+            ### Контрольные суммы (SHA-256)
             Хэши файлов зафиксированы в файле `SHA256SUMS.txt`.
           files: |
             dist/ag-bypass-windows.zip
