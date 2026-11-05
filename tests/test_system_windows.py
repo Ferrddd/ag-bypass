@@ -180,7 +180,7 @@ class TestWindowsHostsManager(unittest.TestCase):
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.hosts_path = Path(self.temp_dir.name) / "hosts"
+        self.hosts_path = Path(self.temp_dir.name).resolve() / "hosts"
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -504,7 +504,7 @@ class TestWindowsBinaryFinderAndPatcher(unittest.TestCase):
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.temp_path = Path(self.temp_dir.name)
+        self.temp_path = Path(self.temp_dir.name).resolve()
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -512,7 +512,7 @@ class TestWindowsBinaryFinderAndPatcher(unittest.TestCase):
     def test_find_binary_configured_path(self):
         bin_file = self.temp_path / "custom_agy.exe"
         bin_file.write_bytes(b"dummy")
-        self.assertEqual(system_windows.find_binary(str(bin_file)), bin_file)
+        self.assertEqual(system_windows.find_binary(str(bin_file)), bin_file.resolve())
 
     def test_find_binary_configured_nonexistent(self):
         self.assertIsNone(system_windows.find_binary(str(self.temp_path / "missing.exe")))
@@ -524,11 +524,11 @@ class TestWindowsBinaryFinderAndPatcher(unittest.TestCase):
         with patch.dict(os.environ, {"TEST_WIN_BIN": str(self.temp_path)}):
             # Test POSIX expansion $VAR
             found = system_windows.find_binary("$TEST_WIN_BIN/agy.exe")
-            self.assertEqual(found, bin_file)
+            self.assertEqual(found, bin_file.resolve())
             # Test Windows expansion %VAR% with ntpath.expandvars
             with patch("os.path.expandvars", side_effect=ntpath.expandvars):
                 found_nt = system_windows.find_binary("%TEST_WIN_BIN%/agy.exe")
-                self.assertEqual(found_nt, bin_file)
+                self.assertEqual(found_nt, bin_file.resolve())
 
     def test_find_binary_auto_localappdata_programs(self):
         agy_path = self.temp_path / "Programs" / "antigravity" / "agy.exe"
@@ -537,7 +537,7 @@ class TestWindowsBinaryFinderAndPatcher(unittest.TestCase):
 
         with patch.dict(os.environ, {"LOCALAPPDATA": str(self.temp_path)}):
             found = system_windows.find_binary("auto")
-            self.assertEqual(found, agy_path)
+            self.assertEqual(found, agy_path.resolve())
 
     def test_find_binary_auto_localappdata_direct(self):
         agy_path = self.temp_path / "antigravity" / "agy.exe"
@@ -546,7 +546,7 @@ class TestWindowsBinaryFinderAndPatcher(unittest.TestCase):
 
         with patch.dict(os.environ, {"LOCALAPPDATA": str(self.temp_path)}):
             found = system_windows.find_binary("auto")
-            self.assertEqual(found, agy_path)
+            self.assertEqual(found, agy_path.resolve())
 
     def test_find_binary_auto_appdata(self):
         agy_path = self.temp_path / "antigravity" / "agy.exe"
@@ -556,7 +556,7 @@ class TestWindowsBinaryFinderAndPatcher(unittest.TestCase):
         clean_env = {"LOCALAPPDATA": "", "APPDATA": str(self.temp_path)}
         with patch.dict(os.environ, clean_env):
             found = system_windows.find_binary("auto")
-            self.assertEqual(found, agy_path)
+            self.assertEqual(found, agy_path.resolve())
 
     def test_find_binary_auto_programfiles(self):
         agy_path = self.temp_path / "Antigravity" / "agy.exe"
@@ -566,7 +566,7 @@ class TestWindowsBinaryFinderAndPatcher(unittest.TestCase):
         clean_env = {"LOCALAPPDATA": "", "APPDATA": "", "ProgramFiles": str(self.temp_path)}
         with patch.dict(os.environ, clean_env):
             found = system_windows.find_binary("auto")
-            self.assertEqual(found, agy_path)
+            self.assertEqual(found, agy_path.resolve())
 
     def test_find_binary_auto_programfiles_x86(self):
         agy_path = self.temp_path / "Antigravity" / "agy.exe"
@@ -581,7 +581,7 @@ class TestWindowsBinaryFinderAndPatcher(unittest.TestCase):
         }
         with patch.dict(os.environ, clean_env):
             found = system_windows.find_binary("auto")
-            self.assertEqual(found, agy_path)
+            self.assertEqual(found, agy_path.resolve())
 
     def test_find_binary_auto_path(self):
         bin_file = self.temp_path / "agy.exe"
@@ -596,7 +596,7 @@ class TestWindowsBinaryFinderAndPatcher(unittest.TestCase):
         with patch.dict(os.environ, clean_env), \
              patch("shutil.which", return_value=str(bin_file)):
             found = system_windows.find_binary("auto")
-            self.assertEqual(found, bin_file)
+            self.assertEqual(found, bin_file.resolve())
 
     def test_find_binary_auto_none(self):
         clean_env = {

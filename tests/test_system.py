@@ -10,7 +10,7 @@ from core import system
 class TestHostsManager(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.hosts_path = Path(self.temp_dir.name) / "hosts"
+        self.hosts_path = Path(self.temp_dir.name).resolve() / "hosts"
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -108,7 +108,7 @@ class TestHostsManager(unittest.TestCase):
 class TestPatcher(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.temp_path = Path(self.temp_dir.name)
+        self.temp_path = Path(self.temp_dir.name).resolve()
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -180,14 +180,14 @@ class TestPatcher(unittest.TestCase):
     def test_find_binary(self):
         bin_file = self.temp_path / "custom_agy"
         bin_file.write_bytes(b"dummy")
-        self.assertEqual(system.find_binary(str(bin_file)), bin_file)
+        self.assertEqual(system.find_binary(str(bin_file)), bin_file.resolve())
         self.assertIsNone(system.find_binary(str(self.temp_path / "nonexistent")))
 
 
 class TestEndpointManager(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.temp_path = Path(self.temp_dir.name)
+        self.temp_path = Path(self.temp_dir.name).resolve()
         self.sys_env = self.temp_path / "sys_env.d/10-antigravity.conf"
         self.sys_prof = self.temp_path / "sys_prof.d/antigravity.sh"
         self.sys_env.parent.mkdir(parents=True, exist_ok=True)
@@ -255,7 +255,7 @@ class TestEndpointManager(unittest.TestCase):
 class TestCLINodesAndStatus(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.temp_path = Path(self.temp_dir.name)
+        self.temp_path = Path(self.temp_dir.name).resolve()
         self.cfg_file = self.temp_path / "test_cfg.json"
         import json
         self.cfg_file.write_text(json.dumps({

@@ -13,7 +13,7 @@ import core
 class TestConfig(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.temp_path = Path(self.temp_dir.name)
+        self.temp_path = Path(self.temp_dir.name).resolve()
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -77,7 +77,7 @@ class TestConfig(unittest.TestCase):
         try:
             os.environ["AG_CONFIG"] = str(cfg_file)
             found = find_config()
-            self.assertEqual(found, cfg_file)
+            self.assertEqual(found.resolve(), cfg_file.resolve())
             cfg = Config()
             self.assertEqual(cfg.nodes, ["9.9.9.9"])
         finally:
@@ -447,7 +447,7 @@ class TestCorePackage(unittest.TestCase):
 class TestCLI(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.temp_path = Path(self.temp_dir.name)
+        self.temp_path = Path(self.temp_dir.name).resolve()
 
     def tearDown(self):
         self.temp_dir.cleanup()
