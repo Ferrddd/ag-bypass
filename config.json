@@ -12,11 +12,17 @@
     "193.233.112.88"
   ],
   "domains": [
-    "daily-cloudcode-pa.googleapis.com"
+    "daily-cloudcode-pa.googleapis.com",
+    "cloudcode-pa.googleapis.com",
+    "aicode.googleapis.com",
+    "generativelanguage.googleapis.com",
+    "oauth2.googleapis.com",
+    "accounts.google.com",
+    "www.googleapis.com"
   ],
   "binary_path": "auto",
   "healthcheck": {
-    "interval_minutes": 15,
+    "interval_minutes": 2,
     "connect_timeout_seconds": 2.5,
     "probe_port": 443,
     "retries": 3,

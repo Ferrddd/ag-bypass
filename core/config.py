@@ -1,6 +1,9 @@
 import json
 import os
-import pwd
+try:
+    import pwd
+except ImportError:
+    pwd = None
 from pathlib import Path
 
 
@@ -19,10 +22,11 @@ def find_config(path: str | Path | None = None) -> Path:
 
     home = Path.home()
     if sudo_user := os.environ.get("SUDO_USER"):
-        try:
-            home = Path(pwd.getpwnam(sudo_user).pw_dir)
-        except Exception:
-            pass
+        if pwd:
+            try:
+                home = Path(pwd.getpwnam(sudo_user).pw_dir)
+            except Exception:
+                pass
     candidates.extend([home / ".config/ag/config.json", Path("/etc/ag/config.json"), project_cfg])
 
     for c in candidates:
@@ -44,7 +48,6 @@ class Config:
             except json.JSONDecodeError as e:
                 raise ValueError(f"Ошибка синтаксиса JSON в '{self.path}': {e}") from e
 
-        self.data = cfg
         dns = cfg.get("smart_dns")
         dns_dict = dns if isinstance(dns, dict) else {}
         hc = cfg.get("healthcheck") if isinstance(cfg.get("healthcheck"), dict) else {}
@@ -60,8 +63,6 @@ class Config:
         elif isinstance(dns, str):
             servers.append(dns)
         self.smart_dns_servers = list(dict.fromkeys(str(s).strip() for s in servers if str(s).strip()))
-        self.smart_dns_host = self.smart_dns_servers[0] if self.smart_dns_servers else ""
-        self.smart_dns_fallback_ip = self.smart_dns_servers[1] if len(self.smart_dns_servers) > 1 else ""
         try:
             p = int(dns_dict.get("port") or 53)
             self.smart_dns_port = p if 1 <= p <= 65535 else 53
@@ -106,10 +107,10 @@ class Config:
         except (ValueError, TypeError):
             self.check_timeout = 2.5
         try:
-            im = int(hc.get("interval_minutes") or 15)
-            self.check_interval_minutes = im if im > 0 else 15
+            im = int(hc.get("interval_minutes") or 2)
+            self.check_interval_minutes = im if im > 0 else 2
         except (ValueError, TypeError):
-            self.check_interval_minutes = 15
+            self.check_interval_minutes = 2
         try:
             cr = int(hc.get("retries") or 3)
             self.check_retries = cr if cr > 0 else 3

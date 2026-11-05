@@ -31,10 +31,11 @@ echo "[✓] Ссылка на исполняемый файл создана: ${
 if [ "$EUID" -eq 0 ]; then
     echo "[*] Настройка systemd таймера фонового мониторинга..."
     cp -f "${SCRIPT_DIR}/systemd/ag-check.service" /etc/systemd/system/
-    cp -f "${SCRIPT_DIR}/systemd/ag-check.timer" /etc/systemd/system/
+    INTERVAL=$(python3 -c "import sys; sys.path.insert(0, '${SCRIPT_DIR}'); from core.config import Config; print(Config().check_interval_minutes)" 2>/dev/null || echo 2)
+    sed "s/OnUnitActiveSec=.*/OnUnitActiveSec=${INTERVAL}min/" "${SCRIPT_DIR}/systemd/ag-check.timer" > /etc/systemd/system/ag-check.timer
     systemctl daemon-reload
     systemctl enable --now ag-check.timer
-    echo "[✓] Таймер ag-check.timer успешно установлен и запущен."
+    echo "[✓] Таймер ag-check.timer успешно установлен и запущен (интервал: ${INTERVAL} мин)."
 else
     echo ""
     echo "[i] Для установки фонового таймера мониторинга systemd запустите:"

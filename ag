@@ -14,10 +14,14 @@ C_CYAN, C_GREEN, C_YELLOW, C_RED, C_BOLD, C_RESET = (
 )
 
 
-def _req_root(action: str):
-    if os.geteuid() != 0:
-        print(f"{C_RED}[!] Ошибка: Для команды '{action}' требуются права root.{C_RESET}")
-        print(f"    Запустите: {C_BOLD}sudo {sys.argv[0]} {action}{C_RESET}")
+def _req_admin(action: str):
+    if not system.is_admin():
+        if sys.platform == "win32":
+            print(f"{C_RED}[!] Ошибка: Для команды '{action}' требуются права Администратора.{C_RESET}")
+            print("    Запустите командную строку или PowerShell от имени Администратора.")
+        else:
+            print(f"{C_RED}[!] Ошибка: Для команды '{action}' требуются права root.{C_RESET}")
+            print(f"    Запустите: {C_BOLD}sudo {sys.argv[0]} {action}{C_RESET}")
         sys.exit(1)
 
 
@@ -34,7 +38,7 @@ def _print_dns_results(res_info, indent="      "):
 
 
 def cmd_on(args, cfg: Config):
-    _req_root("on")
+    _req_admin("on")
 
     if errs := cfg.validate():
         print(f"{C_RED}[!] Ошибка в конфигурации ({cfg.path}):{C_RESET}")
@@ -96,17 +100,17 @@ def cmd_on(args, cfg: Config):
     print(f"      {C_GREEN}[✓] Выбран лучший рабочий SNI: {best_ip} ({lat:.1f} мс){C_RESET}")
 
     # 5. Hosts
-    print(f"{C_BOLD}[5/5] Маршрутизация (/etc/hosts)...{C_RESET}")
+    print(f"{C_BOLD}[5/5] Маршрутизация ({system.DEFAULT_HOSTS_PATH})...{C_RESET}")
     ok, msg = system.set_entries([(best_ip, d) for d in cfg.domains])
     if not ok:
         print(f"      {C_RED}[ERR] {msg}{C_RESET}")
         sys.exit(1)
-    print(f"      {C_GREEN}[✓] {best_ip} -> {', '.join(cfg.domains)} прописан в /etc/hosts{C_RESET}")
+    print(f"      {C_GREEN}[✓] {best_ip} -> {', '.join(cfg.domains)} прописан в {system.DEFAULT_HOSTS_PATH}{C_RESET}")
     print(f"\n{C_GREEN}{C_BOLD}[✓] Обход активирован! Antigravity CLI готов к работе.{C_RESET}")
 
 
 def cmd_off(args, cfg: Config):
-    _req_root("off")
+    _req_admin("off")
     ok, msg = system.clear_entries()
     print(f"{C_GREEN}[✓] {msg}{C_RESET}" if ok else f"{C_RED}[ERR] {msg}{C_RESET}")
     rm = system.remove_endpoint()
@@ -128,11 +132,7 @@ def cmd_status(args, cfg: Config):
         safe_detail = detail.replace("\r", " ").replace("\n", " ").strip()
         node_info = {"ip": ip, "domain": dom, "alive": alive, "latency_ms": lat if alive else 0.0, "detail": safe_detail}
 
-    timer = False
-    try:
-        timer = subprocess.run(["systemctl", "is-active", "ag-check.timer"], capture_output=True, text=True).stdout.strip() == "active"
-    except Exception:
-        pass
+    timer = system.is_timer_active()
 
     print(f"{C_CYAN}{C_BOLD}=== Antigravity Bypass Status ==={C_RESET}")
     print(f"Конфигурация: {cfg.path}" + ("" if cfg.exists else f" {C_YELLOW}(файл не найден){C_RESET}"))
@@ -186,7 +186,7 @@ def cmd_nodes(args, cfg: Config):
 
 
 def cmd_check(args, cfg: Config):
-    _req_root("check")
+    _req_admin("check")
     st, msg = network.check_and_heal(cfg, quiet=args.quiet)
     if not args.quiet:
         col = C_GREEN if st in ("HEALTHY", "HEALED") else C_YELLOW
@@ -194,7 +194,7 @@ def cmd_check(args, cfg: Config):
 
 
 def cmd_unpatch(args, cfg: Config):
-    _req_root("unpatch")
+    _req_admin("unpatch")
     bp = system.find_binary(cfg.binary_path)
     if not bp:
         sys.exit(f"{C_RED}[ERR] Бинарник не найден.{C_RESET}")
@@ -208,7 +208,7 @@ def main():
     base = argparse.ArgumentParser(add_help=False)
     base.add_argument("-c", "--config", default=argparse.SUPPRESS, help="Путь к файлу конфигурации JSON")
 
-    p = argparse.ArgumentParser(description="Antigravity Linux Bypass", parents=[base])
+    p = argparse.ArgumentParser(description="Antigravity Bypass", parents=[base])
     sub = p.add_subparsers(dest="cmd")
     for name, help_text in [("on", "Включить обход"), ("off", "Выключить обход"), ("status", "Показать статус"), ("nodes", "Проверить все узлы"), ("unpatch", "Восстановить бинарник")]:
         sub.add_parser(name, parents=[base], help=help_text)

@@ -21,11 +21,9 @@ if [ "$EUID" -eq 0 ]; then
     echo "[✓] Службы systemd удалены."
 
     rm -f /usr/local/bin/ag
-    rm -rf /var/lib/ag-bypass
-    echo "[✓] Файлы из /usr/local/bin и /var/lib/ag-bypass удалены."
+    echo "[✓] Исполняемый файл /usr/local/bin/ag удалён."
 else
     rm -f "${HOME}/.local/bin/ag"
-    rm -rf "${HOME}/.config/ag-bypass"
     echo "[✓] Симлинк из ~/.local/bin/ag удалён."
     echo "[i] Для полного удаления системных служб и очистки /etc/hosts запустите:"
     echo "    sudo ${SCRIPT_DIR}/uninstall.sh"

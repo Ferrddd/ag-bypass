@@ -26,10 +26,6 @@ def resolve_target(target: str | None) -> str | None:
         return None
 
 
-def resolve_dns_server(host_or_ip: str | None = None, fallback_ip: str | None = None) -> str | None:
-    return resolve_target(host_or_ip) or resolve_target(fallback_ip)
-
-
 def _skip_dns_name(data: bytes, off: int, max_steps: int = 128) -> int:
     steps = 0
     while off < len(data) and steps < max_steps:
@@ -151,9 +147,7 @@ class ResolutionResult:
 
 
 def get_candidate_ips(config, domain: str) -> tuple[list[str], ResolutionResult]:
-    servers = getattr(config, "smart_dns_servers", None) or [
-        s for s in (getattr(config, "smart_dns_host", ""), getattr(config, "smart_dns_fallback_ip", "")) if s
-    ]
+    servers = getattr(config, "smart_dns_servers", []) or []
     dns_results = query_all_dns_servers(
         servers, domain, port=getattr(config, "smart_dns_port", 53), timeout=getattr(config, "smart_dns_timeout", 3.0)
     )
@@ -257,7 +251,7 @@ def check_and_heal(config, quiet: bool = False) -> tuple[str, str]:
 
     entries = system.get_active_entries()
     if not entries:
-        return "DISABLED", "Обход не включен в /etc/hosts"
+        return "DISABLED", "Обход не включен в hosts"
 
     domain = config.domains[0] if config.domains else "daily-cloudcode-pa.googleapis.com"
     cur_ip = next((ip for ip, d in entries if d == domain), entries[0][0])
@@ -285,4 +279,4 @@ def check_and_heal(config, quiet: bool = False) -> tuple[str, str]:
 
     target_domains = config.domains if config.domains else [domain]
     ok, msg = system.set_entries([(new_ip, d) for d in target_domains])
-    return ("HEALED", f"Переключено с {cur_ip} на {new_ip} ({new_lat:.1f} мс)") if ok else ("ERROR", f"Ошибка записи в /etc/hosts: {msg}")
+    return ("HEALED", f"Переключено с {cur_ip} на {new_ip} ({new_lat:.1f} мс)") if ok else ("ERROR", f"Ошибка записи в hosts: {msg}")
