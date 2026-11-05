@@ -13,7 +13,7 @@ import core
 class TestConfig(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.temp_path = Path(self.temp_dir.name)
+        self.temp_path = Path(self.temp_dir.name).resolve()
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -77,7 +77,7 @@ class TestConfig(unittest.TestCase):
         try:
             os.environ["AG_CONFIG"] = str(cfg_file)
             found = find_config()
-            self.assertEqual(found, cfg_file)
+            self.assertEqual(found.resolve(), cfg_file.resolve())
             cfg = Config()
             self.assertEqual(cfg.nodes, ["9.9.9.9"])
         finally:
@@ -177,6 +177,17 @@ class TestNetwork(unittest.TestCase):
 
     def test_resolve_dns_server_removed(self):
         self.assertFalse(hasattr(network, "resolve_dns_server"))
+
+    def test_find_config_safe_without_pwd(self):
+        import core.config as cfg_mod
+        old_pwd = cfg_mod.pwd
+        try:
+            cfg_mod.pwd = None
+            with patch.dict("os.environ", {"SUDO_USER": "fake_user"}, clear=False):
+                found = find_config()
+                self.assertTrue(found.is_file())
+        finally:
+            cfg_mod.pwd = old_pwd
 
     def test_query_a_records_empty_inputs(self):
         self.assertEqual(network.query_a_records(None, "google.com"), [])
@@ -436,33 +447,42 @@ class TestCorePackage(unittest.TestCase):
 class TestCLI(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.temp_path = Path(self.temp_dir.name)
+        self.temp_path = Path(self.temp_dir.name).resolve()
 
     def tearDown(self):
         self.temp_dir.cleanup()
 
     def test_cli_status(self):
         import subprocess
-        res = subprocess.run(["/workspace/ag", "status"], capture_output=True, text=True)
+        import sys
+        ag_bin = Path(__file__).resolve().parent.parent / "ag"
+        sub_env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+        res = subprocess.run([sys.executable, str(ag_bin), "status"], capture_output=True, text=True, encoding="utf-8", errors="replace", env=sub_env)
         self.assertEqual(res.returncode, 0)
         self.assertIn("Antigravity Bypass Status", res.stdout)
         self.assertIn("Конфигурация:", res.stdout)
 
     def test_cli_config_arg_before_and_after(self):
         import subprocess
-        res1 = subprocess.run(["/workspace/ag", "-c", "/nonexistent.json", "status"], capture_output=True, text=True)
+        import sys
+        ag_bin = Path(__file__).resolve().parent.parent / "ag"
+        sub_env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+        res1 = subprocess.run([sys.executable, str(ag_bin), "-c", "/nonexistent.json", "status"], capture_output=True, text=True, encoding="utf-8", errors="replace", env=sub_env)
         self.assertEqual(res1.returncode, 1)
         self.assertIn("Файл конфигурации не найден", res1.stdout + res1.stderr)
 
-        res2 = subprocess.run(["/workspace/ag", "status", "-c", "/nonexistent.json"], capture_output=True, text=True)
+        res2 = subprocess.run([sys.executable, str(ag_bin), "status", "-c", "/nonexistent.json"], capture_output=True, text=True, encoding="utf-8", errors="replace", env=sub_env)
         self.assertEqual(res2.returncode, 1)
         self.assertIn("Файл конфигурации не найден", res2.stdout + res2.stderr)
 
     def test_cli_on_validation_failure_when_empty(self):
         import subprocess
+        import sys
+        ag_bin = Path(__file__).resolve().parent.parent / "ag"
         empty_cfg = self.temp_path / "empty.json"
         empty_cfg.write_text("{}", encoding="utf-8")
-        res = subprocess.run(["/workspace/ag", "-c", str(empty_cfg), "on"], capture_output=True, text=True)
+        sub_env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+        res = subprocess.run([sys.executable, str(ag_bin), "-c", str(empty_cfg), "on"], capture_output=True, text=True, encoding="utf-8", errors="replace", env=sub_env)
         self.assertEqual(res.returncode, 1)
         self.assertIn("Ошибка в конфигурации", res.stdout)
 

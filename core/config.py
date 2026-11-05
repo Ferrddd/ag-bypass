@@ -1,6 +1,9 @@
 import json
 import os
-import pwd
+try:
+    import pwd
+except ImportError:
+    pwd = None
 from pathlib import Path
 
 
@@ -19,10 +22,11 @@ def find_config(path: str | Path | None = None) -> Path:
 
     home = Path.home()
     if sudo_user := os.environ.get("SUDO_USER"):
-        try:
-            home = Path(pwd.getpwnam(sudo_user).pw_dir)
-        except Exception:
-            pass
+        if pwd:
+            try:
+                home = Path(pwd.getpwnam(sudo_user).pw_dir)
+            except Exception:
+                pass
     candidates.extend([home / ".config/ag/config.json", Path("/etc/ag/config.json"), project_cfg])
 
     for c in candidates:

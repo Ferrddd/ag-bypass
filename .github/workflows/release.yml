@@ -1,0 +1,122 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Версия релиза / Tag (например, v1.0.0)'
+        required: true
+        type: string
+        default: 'v1.0.0'
+      draft:
+        description: 'Создать как черновик (Draft)'
+        required: false
+        type: boolean
+        default: false
+      prerelease:
+        description: 'Пре-релиз (Prerelease)'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run unit test suite
+        run: |
+          python3 -m unittest discover tests
+
+  build-and-release:
+    name: Build & Publish Release
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build release archives
+        run: |
+          python3 scripts/build_release.py
+
+      - name: Determine tag name
+        id: vars
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.vars.outputs.tag }}
+          name: Release ${{ steps.vars.outputs.tag }}
+          draft: ${{ github.event.inputs.draft || false }}
+          prerelease: ${{ github.event.inputs.prerelease || false }}
+          generate_release_notes: true
+          body: |
+            ## Релизные архивы
+
+            В этот релиз включены 2 готовых архива для поддерживаемых платформ:
+
+            ### Windows (10 / 11)
+            - **Файл:** `ag-bypass-windows.zip`
+            - **Установка:**
+              1. Скачайте и распакуйте архив.
+              2. Откройте **PowerShell от имени Администратора** в папке проекта.
+              3. Выполните:
+                 ```powershell
+                 .\install.ps1
+                 ```
+              4. Активируйте обход:
+                 ```powershell
+                 ag on
+                 ```
+
+            ---
+
+            ### Linux / macOS
+            - **Файл:** `ag-bypass-linux-macos.tar.gz`
+            - **Установка:**
+              1. Скачайте и распакуйте архив:
+              2. Установите:
+                 ```bash
+                 ./install.sh       # базовая установка в ~/.local/bin/ag
+                 # или системная установка с фоновым таймером systemd:
+                 sudo ./install.sh
+                 ```
+              3. Активируйте обход:
+                 ```bash
+                 sudo ag on
+                 ```
+
+            ---
+
+            ### Контрольные суммы (SHA-256)
+            Хэши файлов зафиксированы в файле `SHA256SUMS.txt`.
+          files: |
+            dist/ag-bypass-windows.zip
+            dist/ag-bypass-linux-macos.tar.gz
+            dist/SHA256SUMS.txt

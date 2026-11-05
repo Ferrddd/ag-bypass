@@ -251,7 +251,7 @@ def check_and_heal(config, quiet: bool = False) -> tuple[str, str]:
 
     entries = system.get_active_entries()
     if not entries:
-        return "DISABLED", "Обход не включен в /etc/hosts"
+        return "DISABLED", "Обход не включен в hosts"
 
     domain = config.domains[0] if config.domains else "daily-cloudcode-pa.googleapis.com"
     cur_ip = next((ip for ip, d in entries if d == domain), entries[0][0])
@@ -279,4 +279,4 @@ def check_and_heal(config, quiet: bool = False) -> tuple[str, str]:
 
     target_domains = config.domains if config.domains else [domain]
     ok, msg = system.set_entries([(new_ip, d) for d in target_domains])
-    return ("HEALED", f"Переключено с {cur_ip} на {new_ip} ({new_lat:.1f} мс)") if ok else ("ERROR", f"Ошибка записи в /etc/hosts: {msg}")
+    return ("HEALED", f"Переключено с {cur_ip} на {new_ip} ({new_lat:.1f} мс)") if ok else ("ERROR", f"Ошибка записи в hosts: {msg}")

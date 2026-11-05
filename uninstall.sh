@@ -12,13 +12,15 @@ if [ "$EUID" -eq 0 ]; then
     "${SCRIPT_DIR}/ag" off 2>/dev/null || true
     "${SCRIPT_DIR}/ag" unpatch 2>/dev/null || true
 
-    if systemctl is-active --quiet ag-check.timer 2>/dev/null; then
-        systemctl disable --now ag-check.timer 2>/dev/null || true
+    if command -v systemctl &>/dev/null; then
+        if systemctl is-active --quiet ag-check.timer 2>/dev/null; then
+            systemctl disable --now ag-check.timer 2>/dev/null || true
+        fi
+        rm -f /etc/systemd/system/ag-check.service
+        rm -f /etc/systemd/system/ag-check.timer
+        systemctl daemon-reload 2>/dev/null || true
+        echo "[✓] Службы systemd удалены."
     fi
-    rm -f /etc/systemd/system/ag-check.service
-    rm -f /etc/systemd/system/ag-check.timer
-    systemctl daemon-reload 2>/dev/null || true
-    echo "[✓] Службы systemd удалены."
 
     rm -f /usr/local/bin/ag
     rm -rf /var/lib/ag-bypass

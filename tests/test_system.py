@@ -1,4 +1,5 @@
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,10 +7,11 @@ from pathlib import Path
 from core import system
 
 
+@unittest.skipIf(sys.platform == "win32", "Linux/Unix-specific system tests skipped on Windows")
 class TestHostsManager(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.hosts_path = Path(self.temp_dir.name) / "hosts"
+        self.hosts_path = Path(self.temp_dir.name).resolve() / "hosts"
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -104,10 +106,11 @@ class TestHostsManager(unittest.TestCase):
         self.assertNotIn("fake.com", text)
 
 
+@unittest.skipIf(sys.platform == "win32", "Linux/Unix-specific system tests skipped on Windows")
 class TestPatcher(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.temp_path = Path(self.temp_dir.name)
+        self.temp_path = Path(self.temp_dir.name).resolve()
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -179,14 +182,15 @@ class TestPatcher(unittest.TestCase):
     def test_find_binary(self):
         bin_file = self.temp_path / "custom_agy"
         bin_file.write_bytes(b"dummy")
-        self.assertEqual(system.find_binary(str(bin_file)), bin_file)
+        self.assertEqual(system.find_binary(str(bin_file)), bin_file.resolve())
         self.assertIsNone(system.find_binary(str(self.temp_path / "nonexistent")))
 
 
+@unittest.skipIf(sys.platform == "win32", "Linux/Unix-specific system tests skipped on Windows")
 class TestEndpointManager(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.temp_path = Path(self.temp_dir.name)
+        self.temp_path = Path(self.temp_dir.name).resolve()
         self.sys_env = self.temp_path / "sys_env.d/10-antigravity.conf"
         self.sys_prof = self.temp_path / "sys_prof.d/antigravity.sh"
         self.sys_env.parent.mkdir(parents=True, exist_ok=True)
@@ -197,7 +201,8 @@ class TestEndpointManager(unittest.TestCase):
 
     def test_apply_and_remove_endpoint(self):
         from unittest.mock import patch
-        with patch("core.system.user_home", return_value=self.temp_path), \
+        with patch("core.system.is_admin", return_value=True), \
+             patch("core.system.user_home", return_value=self.temp_path), \
              patch("core.system._SYS_ENV", self.sys_env), \
              patch("core.system._SYS_PROF", self.sys_prof):
             applied = system.apply_endpoint("https://custom.api.endpoint")
@@ -215,7 +220,8 @@ class TestEndpointManager(unittest.TestCase):
 
     def test_apply_endpoint_sanitization(self):
         from unittest.mock import patch
-        with patch("core.system.user_home", return_value=self.temp_path), \
+        with patch("core.system.is_admin", return_value=True), \
+             patch("core.system.user_home", return_value=self.temp_path), \
              patch("core.system._SYS_ENV", self.sys_env), \
              patch("core.system._SYS_PROF", self.sys_prof):
             system.apply_endpoint('https://example.com"; rm -rf /; echo "')
@@ -249,10 +255,11 @@ class TestEndpointManager(unittest.TestCase):
             self.assertFalse(has_ep)
 
 
+@unittest.skipIf(sys.platform == "win32", "Linux/Unix-specific system tests skipped on Windows")
 class TestCLINodesAndStatus(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.temp_path = Path(self.temp_dir.name)
+        self.temp_path = Path(self.temp_dir.name).resolve()
         self.cfg_file = self.temp_path / "test_cfg.json"
         import json
         self.cfg_file.write_text(json.dumps({
@@ -266,13 +273,15 @@ class TestCLINodesAndStatus(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_cli_nodes_runs_cleanly(self):
-        res = subprocess.run(["/workspace/ag", "-c", str(self.cfg_file), "nodes"], capture_output=True, text=True)
+        ag_bin = Path(__file__).resolve().parent.parent / "ag"
+        res = subprocess.run([sys.executable, str(ag_bin), "-c", str(self.cfg_file), "nodes"], capture_output=True, text=True)
         self.assertEqual(res.returncode, 0)
         self.assertIn("TLS SNI-проверка", res.stdout)
         self.assertIn("SNI СТАТУС", res.stdout)
 
     def test_cmd_nodes_table_alignment(self):
-        res = subprocess.run(["/workspace/ag", "-c", str(self.cfg_file), "nodes"], capture_output=True, text=True)
+        ag_bin = Path(__file__).resolve().parent.parent / "ag"
+        res = subprocess.run([sys.executable, str(ag_bin), "-c", str(self.cfg_file), "nodes"], capture_output=True, text=True)
         self.assertEqual(res.returncode, 0)
         import re
         lines = res.stdout.splitlines()
