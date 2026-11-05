@@ -178,6 +178,17 @@ class TestNetwork(unittest.TestCase):
     def test_resolve_dns_server_removed(self):
         self.assertFalse(hasattr(network, "resolve_dns_server"))
 
+    def test_find_config_safe_without_pwd(self):
+        import core.config as cfg_mod
+        old_pwd = cfg_mod.pwd
+        try:
+            cfg_mod.pwd = None
+            with patch.dict("os.environ", {"SUDO_USER": "fake_user"}, clear=False):
+                found = find_config()
+                self.assertTrue(found.is_file())
+        finally:
+            cfg_mod.pwd = old_pwd
+
     def test_query_a_records_empty_inputs(self):
         self.assertEqual(network.query_a_records(None, "google.com"), [])
         self.assertEqual(network.query_a_records("", "google.com"), [])
