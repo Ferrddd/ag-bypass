@@ -1,7 +1,10 @@
 """Antigravity System Module for Linux"""
 import errno
 import os
-import pwd
+try:
+    import pwd
+except ImportError:
+    pwd = None
 import re
 import shutil
 import subprocess
@@ -20,7 +23,7 @@ def is_admin() -> bool:
 
 
 def user_home() -> Path:
-    if u := os.environ.get("SUDO_USER"):
+    if (u := os.environ.get("SUDO_USER")) and pwd:
         try:
             return Path(pwd.getpwnam(u).pw_dir)
         except Exception:
@@ -215,15 +218,17 @@ def apply_endpoint(url: str) -> list[str]:
     try:
         uf.parent.mkdir(parents=True, exist_ok=True)
         uf.write_text(f"CLOUD_CODE_URL={safe_url}\n")
-        if u := os.environ.get("SUDO_USER"):
+        if (u := os.environ.get("SUDO_USER")) and pwd:
             try:
                 pw = pwd.getpwnam(u)
                 p = uf.parent
                 h = _cur_user_home()
                 while p != h and p != p.parent:
-                    os.chown(p, pw.pw_uid, pw.pw_gid)
+                    if hasattr(os, "chown"):
+                        os.chown(p, pw.pw_uid, pw.pw_gid)
                     p = p.parent
-                os.chown(uf, pw.pw_uid, pw.pw_gid)
+                if hasattr(os, "chown"):
+                    os.chown(uf, pw.pw_uid, pw.pw_gid)
             except Exception:
                 pass
         out.append(str(uf))

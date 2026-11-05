@@ -7,6 +7,7 @@ from pathlib import Path
 from core import system
 
 
+@unittest.skipIf(sys.platform == "win32", "Linux/Unix-specific system tests skipped on Windows")
 class TestHostsManager(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -105,6 +106,7 @@ class TestHostsManager(unittest.TestCase):
         self.assertNotIn("fake.com", text)
 
 
+@unittest.skipIf(sys.platform == "win32", "Linux/Unix-specific system tests skipped on Windows")
 class TestPatcher(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -184,6 +186,7 @@ class TestPatcher(unittest.TestCase):
         self.assertIsNone(system.find_binary(str(self.temp_path / "nonexistent")))
 
 
+@unittest.skipIf(sys.platform == "win32", "Linux/Unix-specific system tests skipped on Windows")
 class TestEndpointManager(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -252,6 +255,7 @@ class TestEndpointManager(unittest.TestCase):
             self.assertFalse(has_ep)
 
 
+@unittest.skipIf(sys.platform == "win32", "Linux/Unix-specific system tests skipped on Windows")
 class TestCLINodesAndStatus(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()

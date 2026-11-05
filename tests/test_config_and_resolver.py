@@ -456,7 +456,8 @@ class TestCLI(unittest.TestCase):
         import subprocess
         import sys
         ag_bin = Path(__file__).resolve().parent.parent / "ag"
-        res = subprocess.run([sys.executable, str(ag_bin), "status"], capture_output=True, text=True)
+        sub_env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+        res = subprocess.run([sys.executable, str(ag_bin), "status"], capture_output=True, text=True, encoding="utf-8", errors="replace", env=sub_env)
         self.assertEqual(res.returncode, 0)
         self.assertIn("Antigravity Bypass Status", res.stdout)
         self.assertIn("Конфигурация:", res.stdout)
@@ -465,11 +466,12 @@ class TestCLI(unittest.TestCase):
         import subprocess
         import sys
         ag_bin = Path(__file__).resolve().parent.parent / "ag"
-        res1 = subprocess.run([sys.executable, str(ag_bin), "-c", "/nonexistent.json", "status"], capture_output=True, text=True)
+        sub_env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+        res1 = subprocess.run([sys.executable, str(ag_bin), "-c", "/nonexistent.json", "status"], capture_output=True, text=True, encoding="utf-8", errors="replace", env=sub_env)
         self.assertEqual(res1.returncode, 1)
         self.assertIn("Файл конфигурации не найден", res1.stdout + res1.stderr)
 
-        res2 = subprocess.run([sys.executable, str(ag_bin), "status", "-c", "/nonexistent.json"], capture_output=True, text=True)
+        res2 = subprocess.run([sys.executable, str(ag_bin), "status", "-c", "/nonexistent.json"], capture_output=True, text=True, encoding="utf-8", errors="replace", env=sub_env)
         self.assertEqual(res2.returncode, 1)
         self.assertIn("Файл конфигурации не найден", res2.stdout + res2.stderr)
 
@@ -479,7 +481,8 @@ class TestCLI(unittest.TestCase):
         ag_bin = Path(__file__).resolve().parent.parent / "ag"
         empty_cfg = self.temp_path / "empty.json"
         empty_cfg.write_text("{}", encoding="utf-8")
-        res = subprocess.run([sys.executable, str(ag_bin), "-c", str(empty_cfg), "on"], capture_output=True, text=True)
+        sub_env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+        res = subprocess.run([sys.executable, str(ag_bin), "-c", str(empty_cfg), "on"], capture_output=True, text=True, encoding="utf-8", errors="replace", env=sub_env)
         self.assertEqual(res.returncode, 1)
         self.assertIn("Ошибка в конфигурации", res.stdout)
 

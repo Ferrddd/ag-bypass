@@ -10,9 +10,21 @@ Also generates SHA256SUMS.txt for integrity verification.
 import argparse
 import hashlib
 import os
+import sys
 import tarfile
 import zipfile
 from pathlib import Path
+
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -74,7 +86,7 @@ def package_windows_zip(output_path: Path):
             # Normalize to forward slash for zip archive
             arcname = rel_path.replace("\\", "/")
             zf.write(src, arcname=arcname)
-    print(f"  [✓] Created Windows archive: {output_path.name} ({output_path.stat().st_size:,} bytes)")
+    print(f"  [OK] Created Windows archive: {output_path.name} ({output_path.stat().st_size:,} bytes)")
 
 
 def package_linux_macos_tar(output_path: Path):
@@ -100,7 +112,7 @@ def package_linux_macos_tar(output_path: Path):
                 ti.mode = 0o644
             with open(src, "rb") as f:
                 tf.addfile(ti, f)
-    print(f"  [✓] Created Linux/macOS archive: {output_path.name} ({output_path.stat().st_size:,} bytes)")
+    print(f"  [OK] Created Linux/macOS archive: {output_path.name} ({output_path.stat().st_size:,} bytes)")
 
 
 def main():
@@ -131,7 +143,7 @@ def main():
         f"{compute_sha256(nix_path)}  {nix_name}",
     ]
     checksums_file.write_text("\n".join(checksums) + "\n", encoding="utf-8")
-    print(f"  [✓] Generated checksums: {checksums_file.name}")
+    print(f"  [OK] Generated checksums: {checksums_file.name}")
     print("\nRelease assets ready:")
     for line in checksums:
         print(f"  {line}")
