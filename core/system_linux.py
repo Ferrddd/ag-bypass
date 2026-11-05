@@ -52,6 +52,16 @@ def _cur_sys_prof() -> Path:
     return _SYS_PROF
 
 
+def _cur_is_admin() -> bool:
+    cs = sys.modules.get("core.system")
+    if cs and hasattr(cs, "is_admin") and cs.is_admin is not is_admin:
+        try:
+            return bool(cs.is_admin())
+        except Exception:
+            pass
+    return is_admin()
+
+
 def _apply_perms(path: Path, st: os.stat_result):
     try:
         os.chmod(path, st.st_mode & 0o7777)
@@ -222,7 +232,7 @@ def apply_endpoint(url: str) -> list[str]:
 
     sys_env = _cur_sys_env()
     sys_prof = _cur_sys_prof()
-    if is_admin():
+    if _cur_is_admin():
         for t, text in [(sys_env, f"CLOUD_CODE_URL={safe_url}\n"), (sys_prof, f'export CLOUD_CODE_URL="{safe_url}"\n')]:
             if t.parent.exists():
                 try:
@@ -238,7 +248,7 @@ def apply_endpoint(url: str) -> list[str]:
 def remove_endpoint() -> list[str]:
     sys_env = _cur_sys_env()
     sys_prof = _cur_sys_prof()
-    targets = [_user_env_file()] + ([sys_env, sys_prof] if is_admin() else [])
+    targets = [_user_env_file()] + ([sys_env, sys_prof] if _cur_is_admin() else [])
     removed = []
     for p in targets:
         if p.is_file():

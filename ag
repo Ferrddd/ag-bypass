@@ -38,13 +38,13 @@ def _print_dns_results(res_info, indent="      "):
 
 
 def cmd_on(args, cfg: Config):
-    _req_admin("on")
-
     if errs := cfg.validate():
         print(f"{C_RED}[!] Ошибка в конфигурации ({cfg.path}):{C_RESET}")
         for err in errs:
             print(f"    - {err}")
         sys.exit(1)
+
+    _req_admin("on")
 
     # 1. Binary check & patch
     print(f"{C_BOLD}[1/5] Клиент Antigravity...{C_RESET}")

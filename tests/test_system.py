@@ -198,7 +198,8 @@ class TestEndpointManager(unittest.TestCase):
 
     def test_apply_and_remove_endpoint(self):
         from unittest.mock import patch
-        with patch("core.system.user_home", return_value=self.temp_path), \
+        with patch("core.system.is_admin", return_value=True), \
+             patch("core.system.user_home", return_value=self.temp_path), \
              patch("core.system._SYS_ENV", self.sys_env), \
              patch("core.system._SYS_PROF", self.sys_prof):
             applied = system.apply_endpoint("https://custom.api.endpoint")
@@ -216,7 +217,8 @@ class TestEndpointManager(unittest.TestCase):
 
     def test_apply_endpoint_sanitization(self):
         from unittest.mock import patch
-        with patch("core.system.user_home", return_value=self.temp_path), \
+        with patch("core.system.is_admin", return_value=True), \
+             patch("core.system.user_home", return_value=self.temp_path), \
              patch("core.system._SYS_ENV", self.sys_env), \
              patch("core.system._SYS_PROF", self.sys_prof):
             system.apply_endpoint('https://example.com"; rm -rf /; echo "')
