@@ -33,6 +33,17 @@ class TestHostsManager(unittest.TestCase):
         self.assertIn(system.TAG_BEGIN, content)
         self.assertIn(system.TAG_END, content)
 
+    def test_set_entries_multi_node_same_domain(self):
+        self.hosts_path.write_text("127.0.0.1 localhost\n", encoding="utf-8")
+        entries = [("1.2.3.4", "example.com"), ("1.2.3.5", "example.com")]
+        ok, msg = system.set_entries(entries, hosts_path=self.hosts_path)
+        self.assertTrue(ok)
+        active = system.get_active_entries(self.hosts_path)
+        self.assertEqual(active, entries)
+        content = self.hosts_path.read_text(encoding="utf-8")
+        self.assertIn("1.2.3.4 example.com", content)
+        self.assertIn("1.2.3.5 example.com", content)
+
     def test_clear_entries(self):
         self.hosts_path.write_text("127.0.0.1 localhost\n", encoding="utf-8")
         system.set_entries([("1.2.3.4", "example.com")], hosts_path=self.hosts_path)

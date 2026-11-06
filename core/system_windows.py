@@ -113,8 +113,9 @@ def set_entries(entries: list[tuple[str, str]], hosts_path: Path = DEFAULT_HOSTS
         for ip, d in entries:
             clean_ip = str(ip).strip().split()[0] if str(ip).strip() else ""
             clean_d = str(d).strip().split()[0] if str(d).strip() else ""
-            if clean_ip and clean_d and clean_d not in seen:
-                seen.add(clean_d)
+            key = (clean_ip, clean_d)
+            if clean_ip and clean_d and key not in seen:
+                seen.add(key)
                 clean_entries.append(f"{clean_ip} {clean_d}")
         if not clean_entries:
             return clear_entries(hosts_path)

@@ -326,14 +326,14 @@ class TestWindowsHostsManager(unittest.TestCase):
         self.assertNotIn("fake.com", text)
 
     @patch("core.system_windows.flush_dns_cache")
-    def test_hosts_deduplicate_domains(self, mock_flush):
+    def test_hosts_multi_ip_and_deduplicate(self, mock_flush):
         self.hosts_path.write_text("127.0.0.1 localhost\n", encoding="utf-8")
-        entries = [("10.0.0.1", "dup.com"), ("10.0.0.2", "dup.com")]
+        entries = [("10.0.0.1", "dup.com"), ("10.0.0.2", "dup.com"), ("10.0.0.1", "dup.com")]
         ok, msg = system_windows.set_entries(entries, hosts_path=self.hosts_path)
         self.assertTrue(ok)
         active = system_windows.get_active_entries(self.hosts_path)
-        self.assertEqual(len(active), 1)
-        self.assertEqual(active[0], ("10.0.0.1", "dup.com"))
+        self.assertEqual(len(active), 2)
+        self.assertEqual(active, [("10.0.0.1", "dup.com"), ("10.0.0.2", "dup.com")])
 
 
 # =====================================================================
