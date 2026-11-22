@@ -247,14 +247,22 @@ def get_endpoint_status() -> tuple[bool, str]:
 
 
 # =====================================================================
-# Binary Finder & Patcher (agy.exe ineligible -> inexigible)
+# Binary Finder & Patcher (Antigravity.exe / agy.exe ineligible -> inexigible)
 # =====================================================================
 
 def find_binary(configured: str | None = "auto") -> Path | None:
     if configured and configured != "auto":
-        expanded = os.path.expandvars(os.path.expanduser(configured))
+        clean = configured.strip().strip('"').strip("'")
+        expanded = os.path.expandvars(os.path.expanduser(clean))
         p = Path(expanded).resolve()
-        return p if p.is_file() else None
+        if p.is_file():
+            return p
+        if p.is_dir():
+            for name in ("Antigravity.exe", "antigravity.exe", "agy.exe", "Antigravity", "antigravity", "agy"):
+                cand = (p / name).resolve()
+                if cand.is_file():
+                    return cand
+        return None
 
     cands = []
     local_appdata = os.environ.get("LOCALAPPDATA")
@@ -262,17 +270,42 @@ def find_binary(configured: str | None = "auto") -> Path | None:
     prog_files = os.environ.get("ProgramFiles")
     prog_files_x86 = os.environ.get("ProgramFiles(x86)")
 
+    candidate_dirs = []
     if local_appdata:
-        cands.append(Path(local_appdata) / "Programs" / "antigravity" / "agy.exe")
-        cands.append(Path(local_appdata) / "antigravity" / "agy.exe")
+        candidate_dirs.extend([
+            Path(local_appdata) / "Programs" / "antigravity",
+            Path(local_appdata) / "Programs" / "Antigravity",
+            Path(local_appdata) / "antigravity",
+            Path(local_appdata) / "Antigravity",
+        ])
     if appdata:
-        cands.append(Path(appdata) / "antigravity" / "agy.exe")
+        candidate_dirs.extend([
+            Path(appdata) / "Programs" / "antigravity",
+            Path(appdata) / "Programs" / "Antigravity",
+            Path(appdata) / "antigravity",
+            Path(appdata) / "Antigravity",
+        ])
     if prog_files:
-        cands.append(Path(prog_files) / "Antigravity" / "agy.exe")
+        candidate_dirs.extend([
+            Path(prog_files) / "Antigravity",
+            Path(prog_files) / "antigravity",
+            Path(prog_files) / "Programs" / "antigravity",
+            Path(prog_files) / "Programs" / "Antigravity",
+        ])
     if prog_files_x86:
-        cands.append(Path(prog_files_x86) / "Antigravity" / "agy.exe")
+        candidate_dirs.extend([
+            Path(prog_files_x86) / "Antigravity",
+            Path(prog_files_x86) / "antigravity",
+            Path(prog_files_x86) / "Programs" / "antigravity",
+            Path(prog_files_x86) / "Programs" / "Antigravity",
+        ])
 
-    for name in ("agy.exe", "antigravity.exe", "agy"):
+    exe_names = ("Antigravity.exe", "antigravity.exe", "agy.exe")
+    for d in candidate_dirs:
+        for name in exe_names:
+            cands.append(d / name)
+
+    for name in ("Antigravity.exe", "antigravity.exe", "agy.exe", "Antigravity", "antigravity", "agy"):
         if w := shutil.which(name):
             cands.append(Path(w))
 
@@ -282,6 +315,28 @@ def find_binary(configured: str | None = "auto") -> Path | None:
                 return p
         except Exception:
             pass
+
+    # Fallback for SYSTEM / elevated service accounts: scan user profiles
+    if local_appdata and "systemprofile" in local_appdata.lower():
+        try:
+            sys_drive = os.environ.get("SystemDrive") or "C:"
+            users_root = Path(sys_drive) / "Users"
+            if users_root.is_dir():
+                for u in sorted(users_root.iterdir()):
+                    if u.is_dir() and u.name.lower() not in ("default", "public", "all users", "default user"):
+                        for base in (
+                            u / "AppData" / "Local" / "Programs" / "antigravity",
+                            u / "AppData" / "Local" / "Programs" / "Antigravity",
+                            u / "AppData" / "Local" / "antigravity",
+                            u / "AppData" / "Local" / "Antigravity",
+                        ):
+                            for name in exe_names:
+                                cand = (base / name).resolve()
+                                if cand.is_file():
+                                    return cand
+        except Exception:
+            pass
+
     return None
 
 

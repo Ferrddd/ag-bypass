@@ -539,6 +539,37 @@ class TestWindowsBinaryFinderAndPatcher(unittest.TestCase):
             found = system_windows.find_binary("auto")
             self.assertEqual(found, agy_path.resolve())
 
+    def test_find_binary_auto_localappdata_antigravity_exe(self):
+        ag_path = self.temp_path / "Programs" / "antigravity" / "Antigravity.exe"
+        ag_path.parent.mkdir(parents=True, exist_ok=True)
+        ag_path.write_bytes(b"dummy")
+
+        with patch.dict(os.environ, {"LOCALAPPDATA": str(self.temp_path)}):
+            found = system_windows.find_binary("auto")
+            self.assertEqual(found, ag_path.resolve())
+
+    def test_find_binary_auto_localappdata_antigravity_lower_exe(self):
+        ag_path = self.temp_path / "Programs" / "antigravity" / "antigravity.exe"
+        ag_path.parent.mkdir(parents=True, exist_ok=True)
+        ag_path.write_bytes(b"dummy")
+
+        with patch.dict(os.environ, {"LOCALAPPDATA": str(self.temp_path)}):
+            found = system_windows.find_binary("auto")
+            self.assertEqual(found, ag_path.resolve())
+
+    def test_find_binary_configured_quoted(self):
+        bin_file = self.temp_path / "Antigravity.exe"
+        bin_file.write_bytes(b"dummy")
+        quoted = f'"{bin_file}"'
+        self.assertEqual(system_windows.find_binary(quoted), bin_file.resolve())
+
+    def test_find_binary_configured_directory(self):
+        prog_dir = self.temp_path / "Programs" / "antigravity"
+        prog_dir.mkdir(parents=True, exist_ok=True)
+        bin_file = prog_dir / "Antigravity.exe"
+        bin_file.write_bytes(b"dummy")
+        self.assertEqual(system_windows.find_binary(str(prog_dir)), bin_file.resolve())
+
     def test_find_binary_auto_localappdata_direct(self):
         agy_path = self.temp_path / "antigravity" / "agy.exe"
         agy_path.parent.mkdir(parents=True, exist_ok=True)

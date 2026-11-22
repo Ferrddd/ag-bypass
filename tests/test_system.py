@@ -194,7 +194,15 @@ class TestPatcher(unittest.TestCase):
         bin_file = self.temp_path / "custom_agy"
         bin_file.write_bytes(b"dummy")
         self.assertEqual(system.find_binary(str(bin_file)), bin_file.resolve())
+        self.assertEqual(system.find_binary(f'"{bin_file}"'), bin_file.resolve())
         self.assertIsNone(system.find_binary(str(self.temp_path / "nonexistent")))
+
+        # Test directory resolution
+        cand_dir = self.temp_path / "app_dir"
+        cand_dir.mkdir(parents=True, exist_ok=True)
+        app_bin = cand_dir / "Antigravity"
+        app_bin.write_bytes(b"dummy")
+        self.assertEqual(system.find_binary(str(cand_dir)), app_bin.resolve())
 
 
 @unittest.skipIf(sys.platform == "win32", "Linux/Unix-specific system tests skipped on Windows")
