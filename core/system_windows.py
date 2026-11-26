@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 try:
@@ -519,3 +520,127 @@ def is_timer_active() -> bool:
         ).returncode == 0
     except Exception:
         return False
+
+
+# =====================================================================
+# Windows Install / Uninstall (used by install.bat / uninstall.bat)
+# =====================================================================
+
+def _notify_env_changed() -> None:
+    try:
+        import ctypes
+        ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001A, 0, "Environment", 0x0002, 1000, None)
+    except Exception:
+        pass
+
+
+def update_user_path(entry: Path, remove: bool = False) -> tuple[bool, str]:
+    """Add or remove a directory from HKCU\\Environment\\Path."""
+    target = os.path.normpath(str(entry))
+    norm_target = os.path.normcase(target)
+
+    if winreg is not None:
+        try:
+            try:
+                key = winreg.OpenKey(
+                    winreg.HKEY_CURRENT_USER,
+                    r"Environment",
+                    0,
+                    winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE,
+                )
+            except FileNotFoundError:
+                if remove:
+                    return True, f"Каталог {target} отсутствует в User Path"
+                key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Environment")
+
+            with key:
+                reg_expand_sz = getattr(winreg, "REG_EXPAND_SZ", winreg.REG_SZ)
+                try:
+                    raw_val, val_type = winreg.QueryValueEx(key, "Path")
+                except FileNotFoundError:
+                    raw_val, val_type = "", reg_expand_sz
+
+                parts = [p for p in str(raw_val).split(";") if p.strip()]
+                filtered = [p for p in parts if os.path.normcase(os.path.normpath(p.strip())) != norm_target]
+
+                if remove:
+                    if len(filtered) == len(parts):
+                        return True, f"Каталог {target} отсутствует в User Path"
+                    new_val = ";".join(filtered)
+                else:
+                    if len(filtered) < len(parts):
+                        return True, f"Каталог {target} уже присутствует в User Path"
+                    new_val = ";".join(parts + [target])
+
+                reg_type = val_type if val_type in (winreg.REG_SZ, reg_expand_sz) else reg_expand_sz
+                winreg.SetValueEx(key, "Path", 0, reg_type, new_val)
+            _notify_env_changed()
+            verb = "удален из" if remove else "добавлен в"
+            return True, f"Каталог {target} {verb} User Path"
+        except Exception as e:
+            return False, f"Ошибка обновления User Path: {e}"
+
+    return False, "Модуль winreg недоступен"
+
+
+def install_windows(app_dir: Path, interval_minutes: int = 2) -> tuple[bool, list[str]]:
+    """Configure Windows Task Scheduler failover job and User Path."""
+    msgs: list[str] = []
+    ag_path = (app_dir / "ag").resolve()
+    py_exe = sys.executable or "python"
+    interval = max(1, int(interval_minutes or 2))
+    task_cmd = f'"{py_exe}" "{ag_path}" check --quiet'
+
+    try:
+        res = subprocess.run(
+            ["schtasks", "/create", "/tn", "AntigravityBypassCheck", "/tr", task_cmd, "/sc", "minute", "/mo", str(interval), "/f"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if res.returncode != 0:
+            err = (res.stderr or res.stdout or "").strip()
+            msgs.append(f"[!] Ошибка создания задачи в schtasks: {err or res.returncode}")
+            return False, msgs
+        msgs.append(f"[✓] Задача 'AntigravityBypassCheck' создана в Планировщике задач (интервал: {interval} мин).")
+    except Exception as e:
+        msgs.append(f"[!] Ошибка запуска schtasks: {e}")
+        return False, msgs
+
+    ok_path, path_msg = update_user_path(app_dir, remove=False)
+    msgs.append(f"[{'✓' if ok_path else 'WARN'}] {path_msg}.")
+    return True, msgs
+
+
+def uninstall_windows(app_dir: Path, configured_binary_path: str = "auto") -> tuple[bool, list[str]]:
+    """Remove hosts entries, revert binary patches, delete Task Scheduler job, and clean Path/registry."""
+    msgs: list[str] = []
+    ok_hosts, hosts_msg = clear_entries()
+    msgs.append(f"[{'✓' if ok_hosts else 'ERR'}] {hosts_msg}")
+
+    for bp in find_binaries(configured_binary_path):
+        if get_binary_status(bp) == "ALREADY_PATCHED":
+            ok_unp, unp_msg = restore_backup(bp)
+            msgs.append(f"[{'✓' if ok_unp else 'WARN'}] {bp}: {unp_msg}")
+
+    try:
+        res = subprocess.run(
+            ["schtasks", "/delete", "/tn", "AntigravityBypassCheck", "/f"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if res.returncode == 0:
+            msgs.append("[✓] Задача 'AntigravityBypassCheck' удалена из Планировщика задач.")
+        else:
+            msgs.append("[i] Задача 'AntigravityBypassCheck' не найдена в Планировщике.")
+    except Exception as e:
+        msgs.append(f"[WARN] Ошибка удаления задачи schtasks: {e}")
+
+    rm_ep = remove_endpoint()
+    if rm_ep:
+        msgs.append(f"[✓] Переменная CLOUD_CODE_URL удалена ({', '.join(rm_ep)}).")
+
+    ok_path, path_msg = update_user_path(app_dir, remove=True)
+    msgs.append(f"[{'✓' if ok_path else 'WARN'}] {path_msg}.")
+    return ok_hosts, msgs

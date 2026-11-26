@@ -40,9 +40,8 @@ COMMON_CORE_FILES = [
 WINDOWS_FILES = [
     "ag",
     "ag.bat",
-    "ag.ps1",
-    "install.ps1",
-    "uninstall.ps1",
+    "install.bat",
+    "uninstall.bat",
     "config.json",
     "README.md",
 ] + COMMON_CORE_FILES

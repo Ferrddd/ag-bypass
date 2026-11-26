@@ -51,7 +51,8 @@ class TestReleasePackaging(unittest.TestCase):
 
             # Ensure no Windows scripts leaked into linux archive
             self.assertNotIn("ag.bat", members)
-            self.assertNotIn("install.ps1", members)
+            self.assertNotIn("install.bat", members)
+            self.assertNotIn("uninstall.bat", members)
 
     def test_compute_sha256(self):
         dummy = self.temp_path / "test.txt"

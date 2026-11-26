@@ -242,13 +242,49 @@ def cmd_unpatch(args, cfg: Config):
         sys.exit(1)
 
 
+def cmd_install(args, cfg: Config):
+    if sys.platform != "win32":
+        sys.exit(f"{C_YELLOW}[i] Для Linux/macOS используйте ./install.sh{C_RESET}")
+    _req_admin("install")
+    from core.system_windows import install_windows
+
+    ok, msgs = install_windows(Path(__file__).resolve().parent, cfg.check_interval_minutes)
+    for m in msgs:
+        print(m)
+    if not ok:
+        sys.exit(1)
+    print(f"\n{C_GREEN}{C_BOLD}Установка завершена! Запустите: ag on{C_RESET}")
+
+
+def cmd_uninstall(args, cfg: Config):
+    if sys.platform != "win32":
+        sys.exit(f"{C_YELLOW}[i] Для Linux/macOS используйте sudo ./uninstall.sh{C_RESET}")
+    _req_admin("uninstall")
+    from core.system_windows import uninstall_windows
+
+    ok, msgs = uninstall_windows(Path(__file__).resolve().parent, cfg.binary_path)
+    for m in msgs:
+        print(m)
+    if not ok:
+        sys.exit(1)
+    print(f"\n{C_GREEN}[✓] Удаление Antigravity Bypass завершено.{C_RESET}")
+
+
 def main():
     base = argparse.ArgumentParser(add_help=False)
     base.add_argument("-c", "--config", default=argparse.SUPPRESS, help="Путь к файлу конфигурации JSON")
 
     p = argparse.ArgumentParser(description="Antigravity Bypass", parents=[base])
     sub = p.add_subparsers(dest="cmd")
-    for name, help_text in [("on", "Включить обход"), ("off", "Выключить обход"), ("status", "Показать статус"), ("nodes", "Проверить все узлы"), ("unpatch", "Восстановить бинарник")]:
+    for name, help_text in [
+        ("on", "Включить обход"),
+        ("off", "Выключить обход"),
+        ("status", "Показать статус"),
+        ("nodes", "Проверить все узлы"),
+        ("unpatch", "Восстановить бинарник"),
+        ("install", "Установить в систему (Windows)"),
+        ("uninstall", "Удалить из системы (Windows)"),
+    ]:
         sub.add_parser(name, parents=[base], help=help_text)
 
     chk = sub.add_parser("check", parents=[base], help="Проверить и обновить узел")
@@ -264,6 +300,7 @@ def main():
     handlers = {
         "on": cmd_on, "off": cmd_off, "status": cmd_status,
         "check": cmd_check, "nodes": cmd_nodes, "unpatch": cmd_unpatch,
+        "install": cmd_install, "uninstall": cmd_uninstall,
     }
     if fn := handlers.get(args.cmd or "status"):
         fn(args, cfg)

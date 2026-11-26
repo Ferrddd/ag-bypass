@@ -24,9 +24,9 @@
 
 1. **Windows 10/11 (`ag-bypass-windows.zip`):**
    - Скачайте и распакуйте архив.
-   - В открытой папке запустите **PowerShell от имени Администратора**:
-     ```powershell
-     .\install.ps1
+   - В открытой папке запустите **PowerShell или CMD от имени Администратора**:
+     ```bat
+     .\install.bat
      ```
 
 2. **Linux & macOS (`ag-bypass-linux-macos.tar.gz`):**
@@ -54,11 +54,11 @@ cd ag-custom
 ./install.sh       # или sudo ./install.sh
 ```
 
-**Windows (PowerShell от имени Администратора):**
-```powershell
+**Windows (PowerShell или CMD от имени Администратора):**
+```bat
 git clone <repo-url> ag-custom
 cd ag-custom
-.\install.ps1
+.\install.bat
 ```
 
 ### 2. Включение обхода
@@ -159,7 +159,7 @@ sudo ag off
 sudo ./uninstall.sh
 ```
 
-**Windows (PowerShell от Администратора):**
-```powershell
-.\uninstall.ps1
+**Windows (PowerShell или CMD от Администратора):**
+```bat
+.\uninstall.bat
 ```

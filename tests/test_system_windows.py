@@ -44,6 +44,7 @@ class FakeWinreg:
     KEY_SET_VALUE = 2
     KEY_QUERY_VALUE = 4
     REG_SZ = 1
+    REG_EXPAND_SZ = 2
 
     def __init__(self):
         # (root, subkey) -> { value_name: (value_data, type) }
@@ -786,6 +787,39 @@ class TestWindowsTaskScheduler(unittest.TestCase):
     def test_is_timer_active_exception(self, mock_run):
         mock_run.side_effect = FileNotFoundError("schtasks not found")
         self.assertFalse(system_windows.is_timer_active())
+
+    def test_update_user_path_and_install_uninstall(self):
+        fake_reg = FakeWinreg()
+        key = fake_reg.CreateKey(FakeWinreg.HKEY_CURRENT_USER, r"Environment")
+        fake_reg.SetValueEx(key, "Path", 0, FakeWinreg.REG_SZ, r"C:\Windows\System32")
+
+        with tempfile.TemporaryDirectory() as td:
+            app_dir = Path(td).resolve() / "ag-bypass"
+            app_dir.mkdir(parents=True, exist_ok=True)
+            (app_dir / "ag").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+
+            with patch("core.system_windows.winreg", fake_reg), \
+                 patch("subprocess.run") as mock_run:
+                mock_run.return_value.returncode = 0
+                ok, msgs = system_windows.install_windows(app_dir, interval_minutes=5)
+                self.assertTrue(ok)
+                self.assertTrue(any("AntigravityBypassCheck" in m for m in msgs))
+
+                val, _ = fake_reg.QueryValueEx(
+                    fake_reg.OpenKey(FakeWinreg.HKEY_CURRENT_USER, r"Environment"),
+                    "Path",
+                )
+                self.assertIn(os.path.normpath(str(app_dir)), val)
+
+                with patch("core.system_windows.clear_entries", return_value=(True, "ok")), \
+                     patch("core.system_windows.find_binaries", return_value=[]):
+                    ok_u, msgs_u = system_windows.uninstall_windows(app_dir)
+                    self.assertTrue(ok_u)
+                    val_after, _ = fake_reg.QueryValueEx(
+                        fake_reg.OpenKey(FakeWinreg.HKEY_CURRENT_USER, r"Environment"),
+                        "Path",
+                    )
+                    self.assertNotIn(os.path.normpath(str(app_dir)), val_after)
 
 
 # =====================================================================
