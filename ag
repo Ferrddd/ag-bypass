@@ -40,11 +40,12 @@ def _req_admin(action: str):
 def _print_dns_results(res_info, indent="      "):
     for r in res_info.dns_results:
         srv = r["server"]
+        tag = "DoH" if r.get("doh") else "DNS"
         if r["ips"]:
-            ip_desc = f" ({r['dns_ip']})" if r["dns_ip"] and r["dns_ip"] != srv else ""
-            print(f"{indent}{C_GREEN}[✓]{C_RESET} DNS {srv}{ip_desc}: получено {len(r['ips'])} IP ({', '.join(r['ips'])})")
+            ip_desc = f" ({r['dns_ip']})" if r.get("dns_ip") and r["dns_ip"] != srv else ""
+            print(f"{indent}{C_GREEN}[✓]{C_RESET} {tag} {srv}{ip_desc}: получено {len(r['ips'])} IP ({', '.join(r['ips'])})")
         else:
-            print(f"{indent}{C_YELLOW}[-]{C_RESET} DNS {srv}: {r['error']}")
+            print(f"{indent}{C_YELLOW}[-]{C_RESET} {tag} {srv}: {r['error']}")
     if res_info.config_nodes:
         print(f"{indent}{C_CYAN}[i]{C_RESET} Статические узлы: {', '.join(res_info.config_nodes)}")
 
@@ -108,16 +109,25 @@ def cmd_on(args, cfg: Config):
         print(f"      {C_RED}[ERR] Ни один из проверенных IP ({', '.join(cands)}) не ответил на TLS SNI-хэндшейк!{C_RESET}")
         sys.exit(1)
 
-    best_ip, lat = working[0]["ip"], working[0]["latency_ms"]
-    print(f"      {C_GREEN}[✓] Выбран лучший рабочий SNI: {best_ip} ({lat:.1f} мс){C_RESET}")
+    max_nodes = getattr(cfg, "max_hosts_ips", 2)
+    chosen_nodes = working[:max_nodes]
+    chosen_ips = [r["ip"] for r in chosen_nodes]
+    if len(chosen_nodes) > 1:
+        ip_summary = ", ".join(f"{r['ip']} ({r['latency_ms']:.1f} мс)" for r in chosen_nodes)
+        print(f"      {C_GREEN}[✓] Выбрано {len(chosen_nodes)} рабочих SNI-узлов: {ip_summary}{C_RESET}")
+    else:
+        best_ip, lat = chosen_nodes[0]["ip"], chosen_nodes[0]["latency_ms"]
+        print(f"      {C_GREEN}[✓] Выбран лучший рабочий SNI: {best_ip} ({lat:.1f} мс){C_RESET}")
 
     # 5. Hosts
     print(f"{C_BOLD}[5/5] Маршрутизация ({system.DEFAULT_HOSTS_PATH})...{C_RESET}")
-    ok, msg = system.set_entries([(best_ip, d) for d in cfg.domains])
+    route_entries = [(ip, d) for ip in chosen_ips for d in cfg.domains]
+    ok, msg = system.set_entries(route_entries)
     if not ok:
         print(f"      {C_RED}[ERR] {msg}{C_RESET}")
         sys.exit(1)
-    print(f"      {C_GREEN}[✓] {best_ip} -> {', '.join(cfg.domains)} прописан в {system.DEFAULT_HOSTS_PATH}{C_RESET}")
+    nodes_label = f"[{', '.join(chosen_ips)}]" if len(chosen_ips) > 1 else chosen_ips[0]
+    print(f"      {C_GREEN}[✓] {nodes_label} -> {', '.join(cfg.domains)} прописан в {system.DEFAULT_HOSTS_PATH}{C_RESET}")
     print(f"\n{C_GREEN}{C_BOLD}[✓] Обход активирован! Antigravity CLI готов к работе.{C_RESET}")
 
 
@@ -151,7 +161,14 @@ def cmd_status(args, cfg: Config):
     bcol = C_GREEN if bst == "ALREADY_PATCHED" else C_YELLOW
     print(f"1. Клиент:    {bcol}{bst}{C_RESET}")
     print(f"2. Эндпоинт:  {C_GREEN if has_ep else C_YELLOW}{ep_desc}{C_RESET}")
-    hdesc = f"{C_GREEN}АКТИВЕН ({', '.join(f'{i}->{d}' for i, d in entries)}){C_RESET}" if entries else f"{C_YELLOW}ОТКЛЮЧЕН{C_RESET}"
+    active_ips = list(dict.fromkeys(ip for ip, _ in entries))
+    active_doms = list(dict.fromkeys(d for _, d in entries))
+    if len(active_ips) > 1:
+        hdesc = f"{C_GREEN}АКТИВЕН ({len(active_ips)} узла: {', '.join(active_ips)} -> {len(active_doms)} доменов){C_RESET}"
+    elif entries:
+        hdesc = f"{C_GREEN}АКТИВЕН ({entries[0][0]} -> {len(active_doms)} доменов){C_RESET}"
+    else:
+        hdesc = f"{C_YELLOW}ОТКЛЮЧЕН{C_RESET}"
     print(f"3. Маршруты:  {hdesc}")
     if node_info:
         ncol = C_GREEN if node_info["alive"] else C_RED

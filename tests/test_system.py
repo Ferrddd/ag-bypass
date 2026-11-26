@@ -33,6 +33,17 @@ class TestHostsManager(unittest.TestCase):
         self.assertIn(system.TAG_BEGIN, content)
         self.assertIn(system.TAG_END, content)
 
+    def test_set_entries_multi_node_same_domain(self):
+        self.hosts_path.write_text("127.0.0.1 localhost\n", encoding="utf-8")
+        entries = [("1.2.3.4", "example.com"), ("1.2.3.5", "example.com")]
+        ok, msg = system.set_entries(entries, hosts_path=self.hosts_path)
+        self.assertTrue(ok)
+        active = system.get_active_entries(self.hosts_path)
+        self.assertEqual(active, entries)
+        content = self.hosts_path.read_text(encoding="utf-8")
+        self.assertIn("1.2.3.4 example.com", content)
+        self.assertIn("1.2.3.5 example.com", content)
+
     def test_clear_entries(self):
         self.hosts_path.write_text("127.0.0.1 localhost\n", encoding="utf-8")
         system.set_entries([("1.2.3.4", "example.com")], hosts_path=self.hosts_path)
@@ -183,7 +194,15 @@ class TestPatcher(unittest.TestCase):
         bin_file = self.temp_path / "custom_agy"
         bin_file.write_bytes(b"dummy")
         self.assertEqual(system.find_binary(str(bin_file)), bin_file.resolve())
+        self.assertEqual(system.find_binary(f'"{bin_file}"'), bin_file.resolve())
         self.assertIsNone(system.find_binary(str(self.temp_path / "nonexistent")))
+
+        # Test directory resolution
+        cand_dir = self.temp_path / "app_dir"
+        cand_dir.mkdir(parents=True, exist_ok=True)
+        app_bin = cand_dir / "Antigravity"
+        app_bin.write_bytes(b"dummy")
+        self.assertEqual(system.find_binary(str(cand_dir)), app_bin.resolve())
 
 
 @unittest.skipIf(sys.platform == "win32", "Linux/Unix-specific system tests skipped on Windows")

@@ -415,12 +415,16 @@ class TestNetwork(unittest.TestCase):
         self.assertIsNone(network.resolve_target("255.255.255.255"))
         self.assertIsNone(network.resolve_target("0.1.2.3"))
 
+    @patch("core.network.query_all_doh_servers")
     @patch("core.network.query_all_dns_servers")
-    def test_network_airgap_dns_failure(self, mock_query_all):
+    def test_network_airgap_dns_failure(self, mock_query_all, mock_doh):
         # Simulate airgapped environment where all DNS servers fail
         mock_query_all.return_value = [
             {"server": "1.1.1.1", "dns_ip": "1.1.1.1", "ips": [], "error": "DNS 1.1.1.1 не вернул A-записей"},
             {"server": "8.8.8.8", "dns_ip": "8.8.8.8", "ips": [], "error": "DNS 8.8.8.8 не вернул A-записей"},
+        ]
+        mock_doh.return_value = [
+            {"server": "https://1.1.1.1/dns-query", "ips": [], "error": "timeout", "doh": True}
         ]
         class DummyConfig:
             smart_dns_servers = ["1.1.1.1", "8.8.8.8"]
@@ -428,7 +432,7 @@ class TestNetwork(unittest.TestCase):
 
         cands, res = network.get_candidate_ips(DummyConfig(), "example.com")
         self.assertEqual(cands, ["192.168.1.100"])
-        self.assertIn("все 2 DNS не ответили", str(res))
+        self.assertIn("все DNS/DoH не ответили", str(res))
 
 
 class TestCorePackage(unittest.TestCase):
@@ -485,6 +489,115 @@ class TestCLI(unittest.TestCase):
         res = subprocess.run([sys.executable, str(ag_bin), "-c", str(empty_cfg), "on"], capture_output=True, text=True, encoding="utf-8", errors="replace", env=sub_env)
         self.assertEqual(res.returncode, 1)
         self.assertIn("Ошибка в конфигурации", res.stdout)
+
+    @patch("ssl.create_default_context")
+    @patch("socket.create_connection")
+    def test_test_ip_filters_proxy_errors(self, mock_conn, mock_ssl):
+        mock_raw = mock_conn.return_value.__enter__.return_value
+        mock_sock = mock_ssl.return_value.wrap_socket.return_value.__enter__.return_value
+
+        # 502 Bad Gateway -> rejected
+        mock_sock.recv.return_value = b"HTTP/1.1 502 Bad Gateway\r\nServer: nginx\r\n\r\n"
+        ok, lat, detail = network.test_ip("1.2.3.4", "example.com")
+        self.assertFalse(ok)
+        self.assertIn("Ошибка прокси: HTTP/1.1 502 Bad Gateway", detail)
+
+        # 503 Service Unavailable -> rejected
+        mock_sock.recv.return_value = b"HTTP/1.1 503 Service Unavailable\r\n\r\n"
+        ok, lat, detail = network.test_ip("1.2.3.4", "example.com")
+        self.assertFalse(ok)
+        self.assertIn("Ошибка прокси", detail)
+
+        # 403 Forbidden (Cloudflare block) -> rejected
+        mock_sock.recv.return_value = b"HTTP/1.1 403 Forbidden\r\nServer: cloudflare\r\n\r\n"
+        ok, lat, detail = network.test_ip("1.2.3.4", "example.com")
+        self.assertFalse(ok)
+        self.assertIn("Ошибка прокси", detail)
+
+        # 200 OK -> accepted
+        mock_sock.recv.return_value = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
+        ok, lat, detail = network.test_ip("1.2.3.4", "example.com")
+        self.assertTrue(ok)
+        self.assertEqual(detail, "HTTP/1.1 200 OK")
+
+        # 404 Not Found -> accepted (Google service response)
+        mock_sock.recv.return_value = b"HTTP/1.1 404 Not Found\r\nServer: gws\r\n\r\n"
+        ok, lat, detail = network.test_ip("1.2.3.4", "example.com")
+        self.assertTrue(ok)
+        self.assertEqual(detail, "HTTP/1.1 404 Not Found")
+
+    @patch("urllib.request.urlopen")
+    def test_query_doh_server_parsing(self, mock_urlopen):
+        import io
+        import json
+        payload = {
+            "Status": 0,
+            "Answer": [
+                {"name": "example.com", "type": 1, "data": "10.0.0.1"},
+                {"name": "example.com", "type": 5, "data": "cname.com"},
+                {"name": "example.com", "type": 1, "data": "10.0.0.2"},
+                {"name": "example.com", "type": 1, "data": "0.0.0.0"},  # Bogon ignored
+            ]
+        }
+        mock_resp = io.BytesIO(json.dumps(payload).encode("utf-8"))
+        mock_urlopen.return_value.__enter__.return_value = mock_resp
+
+        ips = network.query_doh_server("https://1.1.1.1/dns-query", "example.com")
+        self.assertEqual(ips, ["10.0.0.1", "10.0.0.2"])
+
+    def test_query_doh_empty_args(self):
+        self.assertEqual(network.query_doh_server("", "example.com"), [])
+        self.assertEqual(network.query_doh_server("https://1.1.1.1/dns-query", ""), [])
+
+    @patch("urllib.request.urlopen", side_effect=Exception("Network error"))
+    def test_query_doh_network_error(self, mock_urlopen):
+        self.assertEqual(network.query_doh_server("https://1.1.1.1/dns-query", "example.com"), [])
+
+    @patch("core.network.query_all_doh_servers")
+    @patch("core.network.query_all_dns_servers")
+    def test_get_candidate_ips_doh_fallback_success(self, mock_dns, mock_doh):
+        mock_dns.return_value = [{"server": "bad.dns.ru", "dns_ip": "1.2.3.4", "ips": [], "error": "timeout"}]
+        mock_doh.return_value = [{"server": "https://1.1.1.1/dns-query", "dns_ip": "https://1.1.1.1/dns-query", "ips": ["159.194.200.1"], "error": None, "doh": True}]
+
+        class DummyConfig:
+            smart_dns_servers = ["bad.dns.ru"]
+            nodes = []
+
+        cands, res = network.get_candidate_ips(DummyConfig(), "example.com")
+        self.assertEqual(cands, ["159.194.200.1"])
+        self.assertIn("SmartDNS (DoH)", str(res))
+
+    @patch("core.system.set_entries")
+    @patch("core.network.rank_ips")
+    @patch("core.network.get_candidate_ips")
+    @patch("core.network.test_ip_with_retries")
+    @patch("core.system.get_active_entries")
+    def test_check_and_heal_multi_node(self, mock_get_active, mock_test, mock_cands, mock_rank, mock_set):
+        mock_get_active.return_value = [("1.2.3.4", "example.com")]
+        mock_test.return_value = (False, 0.0, "Offline")
+        mock_cands.return_value = (["5.6.7.8", "5.6.7.9"], "DNS OK")
+        mock_rank.return_value = [("5.6.7.8", 14.5), ("5.6.7.9", 20.1)]
+        mock_set.return_value = (True, "Hosts updated")
+
+        class DummyConfig:
+            domains = ["example.com"]
+            check_port = 443
+            check_timeout = 2.5
+            check_retries = 2
+            check_retry_delay = 0.01
+            max_hosts_ips = 2
+
+        st, msg = network.check_and_heal(DummyConfig(), quiet=True)
+        self.assertEqual(st, "HEALED")
+        self.assertIn("Переключено с 1.2.3.4 на 5.6.7.8, 5.6.7.9", msg)
+        mock_set.assert_called_once_with([("5.6.7.8", "example.com"), ("5.6.7.9", "example.com")])
+
+    def test_config_max_hosts_ips_and_doh(self):
+        cfg_file = self.temp_path / "extra_cfg.json"
+        cfg_file.write_text(json.dumps({"max_hosts_ips": 3, "doh_servers": ["https://custom.doh/query"]}), encoding="utf-8")
+        cfg = Config(cfg_file)
+        self.assertEqual(cfg.max_hosts_ips, 3)
+        self.assertEqual(cfg.doh_servers, ["https://custom.doh/query"])
 
 
 if __name__ == "__main__":

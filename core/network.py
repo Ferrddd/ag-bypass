@@ -137,6 +137,63 @@ def query_all_dns_servers(servers: list[str], domain: str, port: int = 53, timeo
         return sorted(results, key=lambda r: order.get(r["server"], 999))
 
 
+DEFAULT_DOH_SERVERS = [
+    "https://1.1.1.1/dns-query",
+    "https://dns.google/resolve",
+]
+
+
+def query_doh_server(url: str, domain: str, timeout: float = 3.0) -> list[str]:
+    """Резолвит A-записи через DNS over HTTPS (DoH) без сторонних зависимостей."""
+    import json
+    import urllib.request
+    clean_url = (url or "").strip()
+    clean_dom = (domain or "").strip().strip(".")
+    if not clean_url or not clean_dom:
+        return []
+    sep = "&" if "?" in clean_url else "?"
+    full_url = f"{clean_url}{sep}name={clean_dom}&type=A"
+    req = urllib.request.Request(
+        full_url,
+        headers={"Accept": "application/dns-json, application/json", "User-Agent": "ag-bypass/1.0"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            ips = []
+            for ans in data.get("Answer", []):
+                if ans.get("type") == 1:
+                    ip = str(ans.get("data", "")).strip()
+                    if ip and ip not in ("0.0.0.0", "255.255.255.255") and not ip.startswith("0.") and ip not in ips:
+                        try:
+                            socket.inet_aton(ip)
+                            ips.append(ip)
+                        except OSError:
+                            pass
+            return ips
+    except Exception:
+        return []
+
+
+def query_all_doh_servers(servers: list[str], domain: str, timeout: float = 3.0) -> list[dict]:
+    cleaned = list(dict.fromkeys(s.strip() for s in (servers or []) if s and s.strip()))
+    if not cleaned:
+        return []
+    with ThreadPoolExecutor(max_workers=min(len(cleaned), 4)) as ex:
+        futs = {ex.submit(query_doh_server, s, domain, timeout): s for s in cleaned}
+        results = []
+        for f in as_completed(futs):
+            s = futs[f]
+            try:
+                ips = f.result()
+                err = None if ips else f"DoH {s} не вернул A-записей ({timeout}с)"
+                results.append({"server": s, "dns_ip": s, "ips": ips, "error": err, "doh": True})
+            except Exception as e:
+                results.append({"server": s, "dns_ip": s, "ips": [], "error": str(e), "doh": True})
+        order = {s: i for i, s in enumerate(cleaned)}
+        return sorted(results, key=lambda r: order.get(r["server"], 999))
+
+
 class ResolutionResult:
     def __init__(self, summary: str, dns_results: list[dict], candidate_ips: list[str], config_nodes: list[str]):
         self.summary, self.dns_results = summary, dns_results
@@ -147,22 +204,41 @@ class ResolutionResult:
 
 
 def get_candidate_ips(config, domain: str) -> tuple[list[str], ResolutionResult]:
-    servers = getattr(config, "smart_dns_servers", []) or []
+    all_servers = getattr(config, "smart_dns_servers", []) or []
+    udp_servers = [s for s in all_servers if not s.startswith("http://") and not s.startswith("https://")]
+    doh_servers = [s for s in all_servers if s.startswith("http://") or s.startswith("https://")]
+
     dns_results = query_all_dns_servers(
-        servers, domain, port=getattr(config, "smart_dns_port", 53), timeout=getattr(config, "smart_dns_timeout", 3.0)
+        udp_servers, domain, port=getattr(config, "smart_dns_port", 53), timeout=getattr(config, "smart_dns_timeout", 3.0)
     )
+
+    if doh_servers:
+        doh_results = query_all_doh_servers(doh_servers, domain, timeout=getattr(config, "smart_dns_timeout", 3.0))
+        dns_results.extend(doh_results)
 
     dns_ips = list(dict.fromkeys(ip for r in dns_results for ip in r["ips"]))
     working = [r for r in dns_results if r["ips"]]
+
+    doh_fallback_used = False
+    if not dns_ips and not doh_servers and (all_servers or getattr(config, "doh_servers", None)):
+        cfg_doh = getattr(config, "doh_servers", None) or DEFAULT_DOH_SERVERS
+        fallback_results = query_all_doh_servers(cfg_doh, domain, timeout=getattr(config, "smart_dns_timeout", 3.0))
+        if any(r["ips"] for r in fallback_results):
+            dns_results.extend(fallback_results)
+            dns_ips = list(dict.fromkeys(ip for r in dns_results for ip in r["ips"]))
+            working = [r for r in dns_results if r["ips"]]
+            doh_fallback_used = True
+
     nodes = list(getattr(config, "nodes", []))
     combined = list(dict.fromkeys(dns_ips + nodes))
 
     if working:
-        summary = f"SmartDNS ({len(working)}/{len(servers)} ответили, найдено {len(dns_ips)} IP)" + (f" + узлы ({len(nodes)})" if nodes else "")
+        prefix = "SmartDNS (DoH)" if doh_fallback_used else "SmartDNS"
+        summary = f"{prefix} ({len(working)}/{len(dns_results)} ответили, найдено {len(dns_ips)} IP)" + (f" + узлы ({len(nodes)})" if nodes else "")
     elif nodes:
-        summary = f"Узлы из config.json" + (f" (все {len(servers)} DNS не ответили)" if servers else "")
-    elif servers:
-        summary = f"Все настроенные DNS-серверы ({len(servers)}) не вернули записей"
+        summary = f"Узлы из config.json" + (f" (все DNS/DoH не ответили)" if dns_results else "")
+    elif dns_results:
+        summary = f"Все настроенные DNS-серверы ({len(dns_results)}) не вернули записей"
     else:
         summary = "DNS-серверы не настроены и список nodes пуст"
 
@@ -189,6 +265,10 @@ def test_ip(ip: str, domain: str, port: int = 443, timeout: float = 2.5) -> tupl
     try:
         ctx = ssl.create_default_context()
         ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
+        try:
+            ctx.set_alpn_protocols(["http/1.1"])
+        except Exception:
+            pass
         with socket.create_connection((clean_ip, p), timeout=timeout) as raw:
             with ctx.wrap_socket(raw, server_hostname=clean_dom) as s:
                 s.settimeout(timeout)
@@ -199,6 +279,13 @@ def test_ip(ip: str, domain: str, port: int = 443, timeout: float = 2.5) -> tupl
                     return False, 0.0, "Пустой ответ от сервера"
                 raw_status = resp.split(b"\r\n")[0].decode("latin1", errors="ignore").strip()
                 status = "".join(c if (c.isprintable() or c == " ") else " " for c in raw_status).strip() or "TLS/SNI OK"
+                code = None
+                if raw_status.startswith("HTTP/"):
+                    parts = raw_status.split()
+                    if len(parts) >= 2 and parts[1].isdigit():
+                        code = int(parts[1])
+                if code in (502, 503, 504, 403):
+                    return False, 0.0, f"Ошибка прокси: {status}"
                 return True, lat, status
     except Exception as e:
         return False, 0.0, str(e)
@@ -254,16 +341,17 @@ def check_and_heal(config, quiet: bool = False) -> tuple[str, str]:
         return "DISABLED", "Обход не включен в hosts"
 
     domain = config.domains[0] if config.domains else "daily-cloudcode-pa.googleapis.com"
-    cur_ip = next((ip for ip, d in entries if d == domain), entries[0][0])
+    cur_ips = list(dict.fromkeys(ip for ip, d in entries if d == domain or entries))
+    primary_ip = cur_ips[0] if cur_ips else entries[0][0]
     alive, lat, detail = test_ip_with_retries(
-        cur_ip, domain, port=config.check_port, timeout=config.check_timeout,
+        primary_ip, domain, port=config.check_port, timeout=config.check_timeout,
         retries=config.check_retries, delay=config.check_retry_delay
     )
     if alive:
-        return "HEALTHY", f"Текущий узел {cur_ip} доступен (задержка {lat:.1f} мс)"
+        return "HEALTHY", f"Текущий узел {primary_ip} доступен (задержка {lat:.1f} мс)"
 
     if not quiet:
-        print(f"[!] Узел {cur_ip} не отвечает ({detail}). Опрос DNS и поиск нового SNI...")
+        print(f"[!] Узел {primary_ip} не отвечает ({detail}). Опрос DNS и поиск нового SNI...")
 
     candidates, res_info = get_candidate_ips(config, domain)
     if not candidates:
@@ -273,10 +361,15 @@ def check_and_heal(config, quiet: bool = False) -> tuple[str, str]:
     if not ranked:
         return "FAILED", f"Ни один из найденных узлов ({', '.join(candidates)}) не прошёл TLS SNI-проверку"
 
-    new_ip, new_lat = ranked[0]
-    if new_ip == cur_ip:
-        return "HEALTHY", f"Узел {cur_ip} снова отвечает (задержка {new_lat:.1f} мс)"
+    max_nodes = getattr(config, "max_hosts_ips", 2)
+    new_ips = [r[0] for r in ranked[:max_nodes]]
+    if new_ips == cur_ips:
+        return "HEALTHY", f"Узел {primary_ip} снова отвечает (задержка {ranked[0][1]:.1f} мс)"
 
     target_domains = config.domains if config.domains else [domain]
-    ok, msg = system.set_entries([(new_ip, d) for d in target_domains])
-    return ("HEALED", f"Переключено с {cur_ip} на {new_ip} ({new_lat:.1f} мс)") if ok else ("ERROR", f"Ошибка записи в hosts: {msg}")
+    route_entries = [(ip, d) for ip in new_ips for d in target_domains]
+    ok, msg = system.set_entries(route_entries)
+    if ok:
+        switched_to = ", ".join(new_ips)
+        return "HEALED", f"Переключено с {primary_ip} на {switched_to} ({ranked[0][1]:.1f} мс)"
+    return "ERROR", f"Ошибка записи в hosts: {msg}"

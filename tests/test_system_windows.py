@@ -326,14 +326,14 @@ class TestWindowsHostsManager(unittest.TestCase):
         self.assertNotIn("fake.com", text)
 
     @patch("core.system_windows.flush_dns_cache")
-    def test_hosts_deduplicate_domains(self, mock_flush):
+    def test_hosts_multi_ip_and_deduplicate(self, mock_flush):
         self.hosts_path.write_text("127.0.0.1 localhost\n", encoding="utf-8")
-        entries = [("10.0.0.1", "dup.com"), ("10.0.0.2", "dup.com")]
+        entries = [("10.0.0.1", "dup.com"), ("10.0.0.2", "dup.com"), ("10.0.0.1", "dup.com")]
         ok, msg = system_windows.set_entries(entries, hosts_path=self.hosts_path)
         self.assertTrue(ok)
         active = system_windows.get_active_entries(self.hosts_path)
-        self.assertEqual(len(active), 1)
-        self.assertEqual(active[0], ("10.0.0.1", "dup.com"))
+        self.assertEqual(len(active), 2)
+        self.assertEqual(active, [("10.0.0.1", "dup.com"), ("10.0.0.2", "dup.com")])
 
 
 # =====================================================================
@@ -538,6 +538,37 @@ class TestWindowsBinaryFinderAndPatcher(unittest.TestCase):
         with patch.dict(os.environ, {"LOCALAPPDATA": str(self.temp_path)}):
             found = system_windows.find_binary("auto")
             self.assertEqual(found, agy_path.resolve())
+
+    def test_find_binary_auto_localappdata_antigravity_exe(self):
+        ag_path = self.temp_path / "Programs" / "antigravity" / "Antigravity.exe"
+        ag_path.parent.mkdir(parents=True, exist_ok=True)
+        ag_path.write_bytes(b"dummy")
+
+        with patch.dict(os.environ, {"LOCALAPPDATA": str(self.temp_path)}):
+            found = system_windows.find_binary("auto")
+            self.assertEqual(found, ag_path.resolve())
+
+    def test_find_binary_auto_localappdata_antigravity_lower_exe(self):
+        ag_path = self.temp_path / "Programs" / "antigravity" / "antigravity.exe"
+        ag_path.parent.mkdir(parents=True, exist_ok=True)
+        ag_path.write_bytes(b"dummy")
+
+        with patch.dict(os.environ, {"LOCALAPPDATA": str(self.temp_path)}):
+            found = system_windows.find_binary("auto")
+            self.assertEqual(found, ag_path.resolve())
+
+    def test_find_binary_configured_quoted(self):
+        bin_file = self.temp_path / "Antigravity.exe"
+        bin_file.write_bytes(b"dummy")
+        quoted = f'"{bin_file}"'
+        self.assertEqual(system_windows.find_binary(quoted), bin_file.resolve())
+
+    def test_find_binary_configured_directory(self):
+        prog_dir = self.temp_path / "Programs" / "antigravity"
+        prog_dir.mkdir(parents=True, exist_ok=True)
+        bin_file = prog_dir / "Antigravity.exe"
+        bin_file.write_bytes(b"dummy")
+        self.assertEqual(system_windows.find_binary(str(prog_dir)), bin_file.resolve())
 
     def test_find_binary_auto_localappdata_direct(self):
         agy_path = self.temp_path / "antigravity" / "agy.exe"

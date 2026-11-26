@@ -63,6 +63,13 @@ class Config:
         elif isinstance(dns, str):
             servers.append(dns)
         self.smart_dns_servers = list(dict.fromkeys(str(s).strip() for s in servers if str(s).strip()))
+        doh = cfg.get("doh_servers") or dns_dict.get("doh_servers")
+        if isinstance(doh, list):
+            self.doh_servers = [str(x).strip() for x in doh if str(x).strip()]
+        elif isinstance(doh, str) and doh.strip():
+            self.doh_servers = [doh.strip()]
+        else:
+            self.doh_servers = []
         try:
             p = int(dns_dict.get("port") or 53)
             self.smart_dns_port = p if 1 <= p <= 65535 else 53
@@ -96,6 +103,11 @@ class Config:
         self.binary_path = str(cfg.get("binary_path") or "auto").strip()
 
         # Healthcheck
+        try:
+            mi = int(cfg.get("max_hosts_ips") or hc.get("max_hosts_ips") or 2)
+            self.max_hosts_ips = mi if mi > 0 else 2
+        except (ValueError, TypeError):
+            self.max_hosts_ips = 2
         try:
             cp = int(hc.get("probe_port") or 443)
             self.check_port = cp if 1 <= cp <= 65535 else 443

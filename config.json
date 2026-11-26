@@ -13,12 +13,7 @@
   ],
   "domains": [
     "daily-cloudcode-pa.googleapis.com",
-    "cloudcode-pa.googleapis.com",
-    "aicode.googleapis.com",
-    "generativelanguage.googleapis.com",
-    "oauth2.googleapis.com",
-    "accounts.google.com",
-    "www.googleapis.com"
+    "cloudcode-pa.googleapis.com"
   ],
   "binary_path": "auto",
   "healthcheck": {

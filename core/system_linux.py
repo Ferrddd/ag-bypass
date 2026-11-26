@@ -166,8 +166,9 @@ def set_entries(entries: list[tuple[str, str]], hosts_path: Path = DEFAULT_HOSTS
         for ip, d in entries:
             clean_ip = str(ip).strip().split()[0] if str(ip).strip() else ""
             clean_d = str(d).strip().split()[0] if str(d).strip() else ""
-            if clean_ip and clean_d and clean_d not in seen:
-                seen.add(clean_d)
+            key = (clean_ip, clean_d)
+            if clean_ip and clean_d and key not in seen:
+                seen.add(key)
                 clean_entries.append(f"{clean_ip} {clean_d}")
         if not clean_entries:
             return clear_entries(hosts_path)
@@ -303,13 +304,21 @@ SIG_ORIGINAL, SIG_PATCHED = b"ineligible", b"inexigible"
 def find_binary(configured: str | None = "auto") -> Path | None:
     home = _cur_user_home()
     if configured and configured != "auto":
-        if configured.startswith("~/"):
-            p = (home / configured[2:]).resolve()
-        elif configured == "~":
+        clean = configured.strip().strip('"').strip("'")
+        if clean.startswith("~/"):
+            p = (home / clean[2:]).resolve()
+        elif clean == "~":
             p = home.resolve()
         else:
-            p = Path(os.path.expanduser(configured)).resolve()
-        return p if p.is_file() else None
+            p = Path(os.path.expanduser(clean)).resolve()
+        if p.is_file():
+            return p
+        if p.is_dir():
+            for name in ("agy", "Antigravity", "antigravity"):
+                cand = (p / name).resolve()
+                if cand.is_file():
+                    return cand
+        return None
 
     cands = [
         home / ".local/bin/agy", home / ".local/share/agy/bin/agy",
@@ -317,7 +326,11 @@ def find_binary(configured: str | None = "auto") -> Path | None:
         home / "Library/Application Support/antigravity/bin/agy",
         Path("/usr/local/bin/agy"), Path("/usr/bin/agy"), Path("/opt/antigravity/bin/agy"), Path("/opt/agy/agy"),
         Path("/Applications/Antigravity.app/Contents/MacOS/agy"),
-    ] + ([Path(w)] if (w := shutil.which("agy")) else [])
+        Path("/Applications/Antigravity.app/Contents/MacOS/Antigravity"),
+    ]
+    for name in ("agy", "antigravity", "Antigravity"):
+        if w := shutil.which(name):
+            cands.append(Path(w))
 
     for c in cands:
         try:
