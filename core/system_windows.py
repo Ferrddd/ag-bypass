@@ -398,68 +398,56 @@ def get_binary_status(bin_path: Path) -> str:
         return f"ERROR: {e}"
 
 
-def _atomic_write_binary(real_bin: Path, content: bytes) -> None:
+def _stream_replace_to_tmp(src: Path, tmp: Path, old: bytes, new: bytes, chunk_size: int = 4 * 1024 * 1024) -> None:
+    overlap = len(old) - 1
+    tail = b""
+    with src.open("rb") as fin, tmp.open("wb") as fout:
+        while chunk := fin.read(chunk_size):
+            replaced = (tail + chunk).replace(old, new)
+            if overlap > 0 and len(replaced) > overlap:
+                fout.write(replaced[:-overlap])
+                tail = replaced[-overlap:]
+            else:
+                tail = replaced
+        if tail:
+            fout.write(tail)
+
+
+def _patch_binary(bin_path: Path, old: bytes, new: bytes, apply_mode: bool) -> tuple[bool, str]:
+    real_bin = bin_path.resolve()
+    status = get_binary_status(real_bin)
+    if status == "FILE_NOT_FOUND":
+        return False, f"Файл не найден: {bin_path}"
+    if status.startswith("ERROR: "):
+        return False, f"Ошибка чтения {real_bin}: {status[7:]}"
+    if apply_mode:
+        if status == "ALREADY_PATCHED":
+            return True, "Бинарник уже пропатчен"
+        if status != "READY_TO_PATCH":
+            return False, "Сигнатура 'ineligible' не найдена в бинарнике"
+    elif status != "ALREADY_PATCHED":
+        return False, "Патч не обнаружен в бинарнике"
+
     tmp = real_bin.with_name(f"{real_bin.name}.{os.getpid()}.tmp")
     try:
-        tmp.write_bytes(content)
+        _stream_replace_to_tmp(real_bin, tmp, old, new)
         os.replace(tmp, real_bin)
-    except Exception:
+        return True, ("Бинарник успешно пропатчен" if apply_mode else "Патч успешно откачен")
+    except Exception as e:
         if tmp.exists():
             try:
                 tmp.unlink()
             except Exception:
                 pass
-        raise
+        return False, (f"Ошибка записи: {e}" if apply_mode else f"Ошибка отката патча: {e}")
 
 
 def apply_patch(bin_path: Path) -> tuple[bool, str]:
-    real_bin = bin_path.resolve()
-    if not real_bin.is_file():
-        return False, f"Файл не найден: {bin_path}"
-    try:
-        d = real_bin.read_bytes()
-    except Exception as e:
-        return False, f"Ошибка чтения {real_bin}: {e}"
-    if SIG_PATCHED in d:
-        return True, "Бинарник уже пропатчен"
-    if SIG_ORIGINAL not in d:
-        return False, "Сигнатура 'ineligible' не найдена в бинарнике"
-
-    try:
-        _atomic_write_binary(real_bin, d.replace(SIG_ORIGINAL, SIG_PATCHED))
-        return True, "Бинарник успешно пропатчен"
-    except Exception as e:
-        return False, f"Ошибка записи: {e}"
+    return _patch_binary(bin_path, SIG_ORIGINAL, SIG_PATCHED, apply_mode=True)
 
 
 def restore_backup(bin_path: Path) -> tuple[bool, str]:
-    real_bin = bin_path.resolve()
-    bak = real_bin.with_name(real_bin.name + ".bak")
-    if bak.is_file():
-        try:
-            _atomic_write_binary(real_bin, bak.read_bytes())
-            try:
-                bak.unlink()
-            except Exception:
-                pass
-            return True, f"Оригинальный бинарник восстановлен из {bak.name}"
-        except Exception as e:
-            return False, f"Ошибка восстановления бэкапа: {e}"
-
-    if not real_bin.is_file():
-        return False, f"Файл не найден: {bin_path}"
-    try:
-        d = real_bin.read_bytes()
-    except Exception as e:
-        return False, f"Ошибка чтения {real_bin}: {e}"
-    if SIG_PATCHED not in d:
-        return False, "Патч не обнаружен в бинарнике"
-
-    try:
-        _atomic_write_binary(real_bin, d.replace(SIG_PATCHED, SIG_ORIGINAL))
-        return True, "Патч успешно откачен"
-    except Exception as e:
-        return False, f"Ошибка отката патча: {e}"
+    return _patch_binary(bin_path, SIG_PATCHED, SIG_ORIGINAL, apply_mode=False)
 
 
 # =====================================================================

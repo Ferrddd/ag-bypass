@@ -300,10 +300,21 @@ class TestPatcher(unittest.TestCase):
         app_bin.write_bytes(b"PAYLOAD_ineligible_END")
 
         with patch.object(sys, "platform", "darwin"), \
-             patch("pathlib.Path.write_bytes", side_effect=PermissionError(1, "Operation not permitted")):
+             patch("os.replace", side_effect=PermissionError(1, "Operation not permitted")):
             ok, msg = system.apply_patch(app_bin)
             self.assertFalse(ok)
             self.assertIn("App Management", msg)
+
+    def test_stream_replace_boundary_across_chunks(self):
+        from core import system_linux
+
+        src = self.temp_path / "src_bin"
+        dst = self.temp_path / "dst_bin"
+        # Chunk size 12 forces "ineligible" (10 bytes) to straddle chunk boundaries
+        payload = b"AAAAineligibleBBBBineligibleCCCC"
+        src.write_bytes(payload)
+        system_linux._stream_replace_to_tmp(src, dst, b"ineligible", b"inexigible", chunk_size=12)
+        self.assertEqual(dst.read_bytes(), b"AAAAinexigibleBBBBinexigibleCCCC")
 
     def test_find_binaries_discovers_both_cli_and_gui(self):
         from unittest.mock import patch
