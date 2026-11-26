@@ -146,16 +146,14 @@ class TestPatcher(unittest.TestCase):
         self.assertEqual(bin_file.stat().st_mode & 0o777, 0o750)
 
         bak_file = bin_file.with_name("agy.bak")
-        self.assertTrue(bak_file.is_file())
-        self.assertEqual(bak_file.read_bytes(), original_data)
-        self.assertEqual(bak_file.stat().st_mode & 0o777, 0o750)
+        self.assertFalse(bak_file.exists(), ".bak backup must not be created")
 
         # 3. Patching again is idempotent
         ok, msg = system.apply_patch(bin_file)
         self.assertTrue(ok)
         self.assertIn("уже пропатчен", msg)
 
-        # 4. Restore & check permissions preserved
+        # 4. Restore & check permissions preserved (reverts patch in-place)
         ok, msg = system.restore_backup(bin_file)
         self.assertTrue(ok)
         self.assertEqual(bin_file.read_bytes(), original_data)
@@ -181,9 +179,9 @@ class TestPatcher(unittest.TestCase):
         self.assertEqual(system.get_binary_status(sym_bin), "ALREADY_PATCHED")
 
         real_bak = real_bin.with_name("real_agy.bak")
-        self.assertTrue(real_bak.is_file())
+        self.assertFalse(real_bak.exists(), ".bak backup must not be created")
 
-        # Restore via symlink must restore real target without breaking symlink
+        # Restore via symlink must revert real target without breaking symlink
         ok, msg = system.restore_backup(sym_bin)
         self.assertTrue(ok)
         self.assertTrue(sym_bin.is_symlink(), "Symlink must be preserved after restore")
@@ -292,6 +290,39 @@ class TestPatcher(unittest.TestCase):
                 capture_output=True,
                 timeout=15,
             )
+
+    def test_find_binaries_discovers_both_cli_and_gui(self):
+        from unittest.mock import patch
+
+        user_home_dir = self.temp_path / "home"
+        cli_bin = user_home_dir / ".local" / "bin" / "agy"
+        cli_bin.parent.mkdir(parents=True, exist_ok=True)
+        cli_bin.write_bytes(b"CLI_ineligible")
+
+        apps_dir = self.temp_path / "Applications"
+        app_bundle = apps_dir / "Antigravity.app"
+        (app_bundle / "Contents" / "MacOS").mkdir(parents=True, exist_ok=True)
+        (app_bundle / "Contents" / "MacOS" / "Antigravity").write_bytes(b"stub")
+        ls_dir = app_bundle / "Contents" / "Resources" / "bin"
+        ls_dir.mkdir(parents=True, exist_ok=True)
+        gui_bin = ls_dir / "language_server"
+        gui_bin.write_bytes(b"GUI_ineligible")
+
+        with patch("core.system.user_home", return_value=user_home_dir), \
+             patch("pathlib.Path.home", return_value=user_home_dir), \
+             patch("core.system_linux._SYS_APPS", apps_dir), \
+             patch("shutil.which", return_value=None):
+            found = system.find_binaries("auto")
+            self.assertEqual(found, [cli_bin.resolve(), gui_bin.resolve()])
+
+            # Patch both via loop just like cmd_on
+            for bp in found:
+                ok, _ = system.apply_patch(bp)
+                self.assertTrue(ok)
+            self.assertEqual(system.get_binary_status(cli_bin), "ALREADY_PATCHED")
+            self.assertEqual(system.get_binary_status(gui_bin), "ALREADY_PATCHED")
+            self.assertFalse(cli_bin.with_name("agy.bak").exists())
+            self.assertFalse(gui_bin.with_name("language_server.bak").exists())
 
 
 @unittest.skipIf(sys.platform == "win32", "Linux/Unix-specific system tests skipped on Windows")

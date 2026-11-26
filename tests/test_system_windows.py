@@ -684,21 +684,37 @@ class TestWindowsBinaryFinderAndPatcher(unittest.TestCase):
         self.assertEqual(system_windows.get_binary_status(bin_file), "ALREADY_PATCHED")
 
         bak_file = bin_file.with_name("agy.exe.bak")
-        self.assertTrue(bak_file.is_file(), ".bak backup file must be created")
-        self.assertEqual(bak_file.read_bytes(), original_data)
+        self.assertFalse(bak_file.exists(), ".bak backup file must not be created")
 
         # 3. Patching again is idempotent
         ok, msg = system_windows.apply_patch(bin_file)
         self.assertTrue(ok)
         self.assertIn("уже пропатчен", msg)
 
-        # 4. Restore backup
+        # 4. Revert patch in-place
         ok, msg = system_windows.restore_backup(bin_file)
         self.assertTrue(ok)
-        self.assertIn("восстановлен", msg)
+        self.assertIn("откачен", msg)
         self.assertEqual(bin_file.read_bytes(), original_data)
-        self.assertFalse(bak_file.exists(), ".bak backup file must be deleted after restore")
+        self.assertFalse(bak_file.exists())
         self.assertEqual(system_windows.get_binary_status(bin_file), "READY_TO_PATCH")
+
+    def test_find_binaries_discovers_both_cli_and_gui(self):
+        prog_dir = self.temp_path / "Programs" / "antigravity"
+        ls_dir = prog_dir / "resources" / "bin"
+        ls_dir.mkdir(parents=True, exist_ok=True)
+        (prog_dir / "Antigravity.exe").write_bytes(b"stub")
+        ls_exe = ls_dir / "language_server.exe"
+        ls_exe.write_bytes(b"GUI_ineligible")
+
+        cli_exe = self.temp_path / "cli" / "agy.exe"
+        cli_exe.parent.mkdir(parents=True, exist_ok=True)
+        cli_exe.write_bytes(b"CLI_ineligible")
+
+        with patch.dict(os.environ, {"LOCALAPPDATA": str(self.temp_path)}), \
+             patch("shutil.which", side_effect=lambda n: str(cli_exe) if n == "agy.exe" else None):
+            found = system_windows.find_binaries("auto")
+            self.assertEqual(found, [ls_exe.resolve(), cli_exe.resolve()])
 
     def test_apply_patch_missing_file(self):
         ok, msg = system_windows.apply_patch(self.temp_path / "nonexistent.exe")
@@ -717,7 +733,7 @@ class TestWindowsBinaryFinderAndPatcher(unittest.TestCase):
         bin_file.write_bytes(b"dummy")
         ok, msg = system_windows.restore_backup(bin_file)
         self.assertFalse(ok)
-        self.assertIn("Бэкап не найден", msg)
+        self.assertIn("Патч не обнаружен", msg)
 
 
 # =====================================================================
@@ -770,6 +786,7 @@ class TestSystemDispatcher(unittest.TestCase):
             self.assertEqual(system.remove_endpoint, system_windows.remove_endpoint)
             self.assertEqual(system.get_endpoint_status, system_windows.get_endpoint_status)
             self.assertEqual(system.find_binary, system_windows.find_binary)
+            self.assertEqual(system.find_binaries, system_windows.find_binaries)
             self.assertEqual(system.get_binary_status, system_windows.get_binary_status)
             self.assertEqual(system.apply_patch, system_windows.apply_patch)
             self.assertEqual(system.restore_backup, system_windows.restore_backup)
@@ -785,6 +802,7 @@ class TestSystemDispatcher(unittest.TestCase):
             self.assertEqual(system.remove_endpoint, system_linux.remove_endpoint)
             self.assertEqual(system.get_endpoint_status, system_linux.get_endpoint_status)
             self.assertEqual(system.find_binary, system_linux.find_binary)
+            self.assertEqual(system.find_binaries, system_linux.find_binaries)
             self.assertEqual(system.get_binary_status, system_linux.get_binary_status)
             self.assertEqual(system.apply_patch, system_linux.apply_patch)
             self.assertEqual(system.restore_backup, system_linux.restore_backup)
@@ -804,6 +822,7 @@ class TestSystemDispatcher(unittest.TestCase):
             "remove_endpoint",
             "get_endpoint_status",
             "find_binary",
+            "find_binaries",
             "get_binary_status",
             "apply_patch",
             "restore_backup",

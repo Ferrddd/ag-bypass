@@ -261,21 +261,39 @@ def _win_dir_candidates(base_dir: Path) -> list[Path]:
     ]
 
 
-def find_binary(configured: str | None = "auto") -> Path | None:
+def _add_unique_file(found: list[Path], seen: set[Path], path: Path) -> None:
+    try:
+        rp = path.resolve()
+        if rp.is_file() and rp not in seen:
+            seen.add(rp)
+            found.append(rp)
+    except Exception:
+        pass
+
+
+def _first_existing_file(candidates: list[Path]) -> Path | None:
+    for c in candidates:
+        try:
+            if (p := c.resolve()).is_file():
+                return p
+        except Exception:
+            pass
+    return None
+
+
+def find_binaries(configured: str | None = "auto") -> list[Path]:
+    """Discover all matching CLI and GUI Antigravity binaries on Windows."""
     if configured and configured != "auto":
         clean = configured.strip().strip('"').strip("'")
         expanded = os.path.expandvars(os.path.expanduser(clean))
         p = Path(expanded).resolve()
         if p.is_file():
-            return p
+            return [p]
         if p.is_dir():
-            for cand in _win_dir_candidates(p) + [p / "Antigravity", p / "antigravity", p / "agy"]:
-                rc = cand.resolve()
-                if rc.is_file():
-                    return rc
-        return None
+            if found := _first_existing_file(_win_dir_candidates(p) + [p / "Antigravity", p / "antigravity", p / "agy"]):
+                return [found]
+        return []
 
-    cands = []
     local_appdata = os.environ.get("LOCALAPPDATA")
     appdata = os.environ.get("APPDATA")
     prog_files = os.environ.get("ProgramFiles")
@@ -311,19 +329,29 @@ def find_binary(configured: str | None = "auto") -> Path | None:
             Path(prog_files_x86) / "Programs" / "Antigravity",
         ])
 
+    found: list[Path] = []
+    seen: set[Path] = set()
+    seen_dirs: set[Path] = set()
+
     for d in candidate_dirs:
-        cands.extend(_win_dir_candidates(d))
+        try:
+            rd = d.resolve()
+        except Exception:
+            rd = d
+        if rd not in seen_dirs:
+            seen_dirs.add(rd)
+            if bp := _first_existing_file(_win_dir_candidates(rd)):
+                _add_unique_file(found, seen, bp)
 
     for name in ("language_server.exe", "Antigravity.exe", "antigravity.exe", "agy.exe", "Antigravity", "antigravity", "agy"):
         if w := shutil.which(name):
-            cands.append(Path(w))
-
-    for c in cands:
-        try:
-            if (p := c.resolve()).is_file():
-                return p
-        except Exception:
-            pass
+            wp = Path(w)
+            try:
+                rwp = wp.resolve()
+                ls = (rwp.parent / "resources" / "bin" / "language_server.exe").resolve()
+                _add_unique_file(found, seen, ls if ls.is_file() else rwp)
+            except Exception:
+                pass
 
     # Fallback for SYSTEM / elevated service accounts: scan user profiles
     if local_appdata and "systemprofile" in local_appdata.lower():
@@ -339,14 +367,17 @@ def find_binary(configured: str | None = "auto") -> Path | None:
                             u / "AppData" / "Local" / "antigravity",
                             u / "AppData" / "Local" / "Antigravity",
                         ):
-                            for cand_path in _win_dir_candidates(base):
-                                cand = cand_path.resolve()
-                                if cand.is_file():
-                                    return cand
+                            if bp := _first_existing_file(_win_dir_candidates(base)):
+                                _add_unique_file(found, seen, bp)
         except Exception:
             pass
 
-    return None
+    return found
+
+
+def find_binary(configured: str | None = "auto") -> Path | None:
+    bins = find_binaries(configured)
+    return bins[0] if bins else None
 
 
 def get_binary_status(bin_path: Path) -> str:
@@ -373,18 +404,11 @@ def apply_patch(bin_path: Path) -> tuple[bool, str]:
     if SIG_ORIGINAL not in d:
         return False, "Сигнатура 'ineligible' не найдена в бинарнике"
 
-    bak = real_bin.with_name(real_bin.name + ".bak")
-    if not bak.exists():
-        try:
-            shutil.copy2(real_bin, bak)
-        except Exception as e:
-            return False, f"Не удалось создать бэкап {bak}: {e}"
-
     tmp = real_bin.with_name(f"{real_bin.name}.{os.getpid()}.tmp")
     try:
         tmp.write_bytes(d.replace(SIG_ORIGINAL, SIG_PATCHED))
         os.replace(tmp, real_bin)
-        return True, f"Бинарник успешно пропатчен (бэкап сохранён в {bak.name})"
+        return True, "Бинарник успешно пропатчен"
     except Exception as e:
         if tmp.exists():
             try:
@@ -397,24 +421,45 @@ def apply_patch(bin_path: Path) -> tuple[bool, str]:
 def restore_backup(bin_path: Path) -> tuple[bool, str]:
     real_bin = bin_path.resolve()
     bak = real_bin.with_name(real_bin.name + ".bak")
-    if not bak.is_file():
-        return False, f"Бэкап не найден: {bak}"
+    if bak.is_file():
+        tmp = real_bin.with_name(f"{real_bin.name}.{os.getpid()}.tmp")
+        try:
+            shutil.copy2(bak, tmp)
+            os.replace(tmp, real_bin)
+            try:
+                bak.unlink()
+            except Exception:
+                pass
+            return True, f"Оригинальный бинарник восстановлен из {bak.name}"
+        except Exception as e:
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except Exception:
+                    pass
+            return False, f"Ошибка восстановления бэкапа: {e}"
+
+    if not real_bin.is_file():
+        return False, f"Файл не найден: {bin_path}"
+    try:
+        d = real_bin.read_bytes()
+    except Exception as e:
+        return False, f"Ошибка чтения {real_bin}: {e}"
+    if SIG_PATCHED not in d:
+        return False, "Патч не обнаружен в бинарнике"
+
     tmp = real_bin.with_name(f"{real_bin.name}.{os.getpid()}.tmp")
     try:
-        shutil.copy2(bak, tmp)
+        tmp.write_bytes(d.replace(SIG_PATCHED, SIG_ORIGINAL))
         os.replace(tmp, real_bin)
-        try:
-            bak.unlink()
-        except Exception:
-            pass
-        return True, f"Оригинальный бинарник восстановлен из {bak.name}"
+        return True, "Патч успешно откачен"
     except Exception as e:
         if tmp.exists():
             try:
                 tmp.unlink()
             except Exception:
                 pass
-        return False, f"Ошибка восстановления бэкапа: {e}"
+        return False, f"Ошибка отката патча: {e}"
 
 
 # =====================================================================

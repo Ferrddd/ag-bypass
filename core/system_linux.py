@@ -360,7 +360,30 @@ def _first_existing_file(candidates: list[Path]) -> Path | None:
     return None
 
 
-def find_binary(configured: str | None = "auto") -> Path | None:
+def _add_unique_file(found: list[Path], seen: set[Path], path: Path) -> None:
+    try:
+        rp = path.resolve()
+        if rp.is_file() and rp not in seen:
+            seen.add(rp)
+            found.append(rp)
+    except Exception:
+        pass
+
+
+def _resolve_linux_app_or_bin(path: Path) -> Path | None:
+    """If path resolves to an Electron desktop wrapper beside resources/bin/language_server, prefer language_server."""
+    try:
+        rp = path.resolve()
+        if not rp.is_file():
+            return None
+        ls = (rp.parent / "resources" / "bin" / "language_server").resolve()
+        return ls if ls.is_file() else rp
+    except Exception:
+        return None
+
+
+def find_binaries(configured: str | None = "auto") -> list[Path]:
+    """Discover all matching CLI and GUI Antigravity binaries."""
     home = _cur_user_home()
     if configured and configured != "auto":
         clean = configured.strip().strip('"').strip("'")
@@ -371,45 +394,73 @@ def find_binary(configured: str | None = "auto") -> Path | None:
         else:
             p = Path(os.path.expanduser(clean)).resolve()
         if p.is_file():
-            return p
+            return [p]
         if p.is_dir():
             if p.suffix == ".app" or (p / "Contents").is_dir():
                 if found := _first_existing_file(_app_bundle_candidates(p)):
-                    return found
+                    return [found]
+            if (ls := (p / "resources" / "bin" / "language_server").resolve()).is_file():
+                return [ls]
             for name in ("language_server", "agy", "Antigravity", "antigravity", "Electron"):
                 cand = (p / name).resolve()
                 if cand.is_file():
-                    return cand
-        return None
+                    return [cand]
+        return []
 
-    cands = [
+    found: list[Path] = []
+    seen: set[Path] = set()
+
+    # 1. CLI binaries (agy)
+    cli_cands = [
         home / ".local/bin/agy", home / ".local/share/agy/bin/agy",
         Path.home() / ".local/bin/agy", Path.home() / ".local/share/agy/bin/agy",
         home / "Library/Application Support/antigravity/bin/agy",
         Path("/usr/local/bin/agy"), Path("/usr/bin/agy"), Path("/opt/antigravity/bin/agy"), Path("/opt/agy/agy"),
     ]
+    if w := shutil.which("agy"):
+        cli_cands.append(Path(w))
+    for c in cli_cands:
+        _add_unique_file(found, seen, c)
 
+    # 2. macOS GUI .app bundles
+    seen_apps: set[Path] = set()
     app_roots = list(dict.fromkeys([_cur_sys_apps(), home / "Applications", Path.home() / "Applications"]))
     for root in app_roots:
         for app_name in _MACOS_APP_NAMES:
             app_dir = root / app_name
             if app_dir.is_dir():
-                cands.extend(_app_bundle_candidates(app_dir))
+                try:
+                    resolved_app = app_dir.resolve()
+                except Exception:
+                    resolved_app = app_dir
+                if resolved_app not in seen_apps:
+                    seen_apps.add(resolved_app)
+                    if bp := _first_existing_file(_app_bundle_candidates(resolved_app)):
+                        _add_unique_file(found, seen, bp)
 
-    cands.extend([
-        Path("/usr/share/antigravity/resources/bin/language_server"),
-        Path("/opt/antigravity/resources/bin/language_server"),
-        Path("/usr/share/antigravity/antigravity"),
-        Path("/opt/antigravity/antigravity"),
-        Path("/usr/local/bin/antigravity"),
-        Path("/usr/bin/antigravity"),
-    ])
+    # 3. Linux GUI desktop app directories & PATH fallbacks
+    for desktop_dir in (Path("/usr/share/antigravity"), Path("/opt/antigravity")):
+        if desktop_dir.is_dir():
+            if bp := _first_existing_file([
+                desktop_dir / "resources" / "bin" / "language_server",
+                desktop_dir / "antigravity",
+            ]):
+                _add_unique_file(found, seen, bp)
 
-    for name in ("agy", "antigravity", "Antigravity"):
+    gui_cands = [Path("/usr/local/bin/antigravity"), Path("/usr/bin/antigravity")]
+    for name in ("antigravity", "Antigravity"):
         if w := shutil.which(name):
-            cands.append(Path(w))
+            gui_cands.append(Path(w))
+    for c in gui_cands:
+        if resolved := _resolve_linux_app_or_bin(c):
+            _add_unique_file(found, seen, resolved)
 
-    return _first_existing_file(cands)
+    return found
+
+
+def find_binary(configured: str | None = "auto") -> Path | None:
+    bins = find_binaries(configured)
+    return bins[0] if bins else None
 
 
 def get_binary_status(bin_path: Path) -> str:
@@ -472,14 +523,6 @@ def apply_patch(bin_path: Path) -> tuple[bool, str]:
         return False, "Сигнатура 'ineligible' не найдена в бинарнике"
 
     st = real_bin.stat()
-    bak = real_bin.with_name(real_bin.name + ".bak")
-    if not bak.exists():
-        try:
-            shutil.copy2(real_bin, bak)
-            _apply_perms(bak, st)
-        except Exception as e:
-            return False, f"Не удалось создать бэкап {bak}: {e}"
-
     tmp = real_bin.with_name(f"{real_bin.name}.{os.getpid()}.tmp")
     try:
         tmp.write_bytes(d.replace(SIG_ORIGINAL, SIG_PATCHED))
@@ -487,10 +530,10 @@ def apply_patch(bin_path: Path) -> tuple[bool, str]:
         os.replace(tmp, real_bin)
         resigned = _resign_macos_macho(real_bin)
         if resigned is True:
-            return True, f"Бинарник успешно пропатчен и переподписан (бэкап сохранён в {bak.name})"
+            return True, "Бинарник успешно пропатчен и переподписан"
         if resigned is False:
-            return True, f"Бинарник пропатчен (бэкап сохранён в {bak.name}), но не удалось переподписать через codesign"
-        return True, f"Бинарник успешно пропатчен (бэкап сохранён в {bak.name})"
+            return True, "Бинарник пропатчен, но не удалось переподписать через codesign"
+        return True, "Бинарник успешно пропатчен"
     except Exception as e:
         if tmp.exists():
             try:
@@ -503,26 +546,50 @@ def apply_patch(bin_path: Path) -> tuple[bool, str]:
 def restore_backup(bin_path: Path) -> tuple[bool, str]:
     real_bin = bin_path.resolve()
     bak = real_bin.with_name(real_bin.name + ".bak")
-    if not bak.is_file():
-        return False, f"Бэкап не найден: {bak}"
-    st = bak.stat()
+    if bak.is_file():
+        st = bak.stat()
+        tmp = real_bin.with_name(f"{real_bin.name}.{os.getpid()}.tmp")
+        try:
+            shutil.copy2(bak, tmp)
+            _apply_perms(tmp, st)
+            os.replace(tmp, real_bin)
+            try:
+                bak.unlink()
+            except Exception:
+                pass
+            return True, f"Оригинальный бинарник восстановлен из {bak.name}"
+        except Exception as e:
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except Exception:
+                    pass
+            return False, f"Ошибка восстановления бэкапа: {e}"
+
+    if not real_bin.is_file():
+        return False, f"Файл не найден: {bin_path}"
+    try:
+        d = real_bin.read_bytes()
+    except Exception as e:
+        return False, f"Ошибка чтения {real_bin}: {e}"
+    if SIG_PATCHED not in d:
+        return False, "Патч не обнаружен в бинарнике"
+
+    st = real_bin.stat()
     tmp = real_bin.with_name(f"{real_bin.name}.{os.getpid()}.tmp")
     try:
-        shutil.copy2(bak, tmp)
+        tmp.write_bytes(d.replace(SIG_PATCHED, SIG_ORIGINAL))
         _apply_perms(tmp, st)
         os.replace(tmp, real_bin)
-        try:
-            bak.unlink()
-        except Exception:
-            pass
-        return True, f"Оригинальный бинарник восстановлен из {bak.name}"
+        _resign_macos_macho(real_bin)
+        return True, "Патч успешно откачен"
     except Exception as e:
         if tmp.exists():
             try:
                 tmp.unlink()
             except Exception:
                 pass
-        return False, f"Ошибка восстановления бэкапа: {e}"
+        return False, f"Ошибка отката патча: {e}"
 
 
 # =====================================================================

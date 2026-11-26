@@ -59,16 +59,17 @@ def cmd_on(args, cfg: Config):
 
     _req_admin("on")
 
-    # 1. Binary check & patch
+    # 1. Binary check & patch (all detected CLI & GUI binaries)
     print(f"{C_BOLD}[1/5] Клиент Antigravity...{C_RESET}")
-    if bp := system.find_binary(cfg.binary_path):
-        st = system.get_binary_status(bp)
-        if st == "READY_TO_PATCH":
-            ok, msg = system.apply_patch(bp)
-            print(f"      {C_GREEN if ok else C_RED}{msg}{C_RESET}")
-        else:
-            col = C_GREEN if st == "ALREADY_PATCHED" else C_YELLOW
-            print(f"      Файл: {bp} (статус: {col}{st}{C_RESET})")
+    if bps := system.find_binaries(cfg.binary_path):
+        for bp in bps:
+            st = system.get_binary_status(bp)
+            if st == "READY_TO_PATCH":
+                ok, msg = system.apply_patch(bp)
+                print(f"      {C_GREEN if ok else C_RED}{bp}: {msg}{C_RESET}")
+            else:
+                col = C_GREEN if st == "ALREADY_PATCHED" else C_YELLOW
+                print(f"      Файл: {bp} (статус: {col}{st}{C_RESET})")
     else:
         print(f"      {C_YELLOW}[WARN] Бинарник не найден в стандартных путях.{C_RESET}")
 
@@ -142,8 +143,7 @@ def cmd_off(args, cfg: Config):
 
 
 def cmd_status(args, cfg: Config):
-    bp = system.find_binary(cfg.binary_path)
-    bst = system.get_binary_status(bp) if bp else "NOT_FOUND"
+    bps = system.find_binaries(cfg.binary_path)
     has_ep, ep_desc = system.get_endpoint_status()
     entries = system.get_active_entries()
 
@@ -158,9 +158,19 @@ def cmd_status(args, cfg: Config):
 
     print(f"{C_CYAN}{C_BOLD}=== Antigravity Bypass Status ==={C_RESET}")
     print(f"Конфигурация: {cfg.path}" + ("" if cfg.exists else f" {C_YELLOW}(файл не найден){C_RESET}"))
-    bcol = C_GREEN if bst == "ALREADY_PATCHED" else C_YELLOW
-    bpath = f" ({bp})" if bp else ""
-    print(f"1. Клиент:    {bcol}{bst}{C_RESET}{bpath}")
+    if not bps:
+        print(f"1. Клиент:    {C_YELLOW}NOT_FOUND{C_RESET}")
+    elif len(bps) == 1:
+        bp = bps[0]
+        bst = system.get_binary_status(bp)
+        bcol = C_GREEN if bst == "ALREADY_PATCHED" else C_YELLOW
+        print(f"1. Клиент:    {bcol}{bst}{C_RESET} ({bp})")
+    else:
+        print("1. Клиенты:")
+        for bp in bps:
+            bst = system.get_binary_status(bp)
+            bcol = C_GREEN if bst == "ALREADY_PATCHED" else C_YELLOW
+            print(f"              {bcol}{bst}{C_RESET} ({bp})")
     print(f"2. Эндпоинт:  {C_GREEN if has_ep else C_YELLOW}{ep_desc}{C_RESET}")
     active_ips = list(dict.fromkeys(ip for ip, _ in entries))
     active_doms = list(dict.fromkeys(d for _, d in entries))
@@ -225,12 +235,16 @@ def cmd_check(args, cfg: Config):
 
 def cmd_unpatch(args, cfg: Config):
     _req_admin("unpatch")
-    bp = system.find_binary(cfg.binary_path)
-    if not bp:
+    bps = system.find_binaries(cfg.binary_path)
+    if not bps:
         sys.exit(f"{C_RED}[ERR] Бинарник не найден.{C_RESET}")
-    ok, msg = system.restore_backup(bp)
-    print(f"{C_GREEN if ok else C_RED}[{'✓' if ok else 'ERR'}] {msg}{C_RESET}")
-    if not ok:
+    any_err = False
+    for bp in bps:
+        ok, msg = system.restore_backup(bp)
+        print(f"{C_GREEN if ok else C_RED}[{'✓' if ok else 'ERR'}] {bp}: {msg}{C_RESET}")
+        if not ok:
+            any_err = True
+    if any_err:
         sys.exit(1)
 
 
