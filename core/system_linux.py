@@ -1,6 +1,8 @@
 """Antigravity System Module for Linux"""
 import errno
 import os
+import platform
+import plistlib
 try:
     import pwd
 except ImportError:
@@ -299,6 +301,59 @@ def get_endpoint_status() -> tuple[bool, str]:
 # =====================================================================
 
 SIG_ORIGINAL, SIG_PATCHED = b"ineligible", b"inexigible"
+_SYS_APPS = Path("/Applications")
+_MACOS_APP_NAMES = ("Antigravity.app", "Antigravity IDE.app")
+
+
+def _cur_sys_apps() -> Path:
+    cs = sys.modules.get("core.system")
+    if cs and hasattr(cs, "_SYS_APPS"):
+        return Path(cs._SYS_APPS)
+    return _SYS_APPS
+
+
+def _app_bundle_candidates(app_dir: Path) -> list[Path]:
+    """Return candidate executable paths inside a macOS .app bundle."""
+    cands: list[Path] = []
+    contents = app_dir / "Contents"
+    macos_dir = contents / "MacOS"
+    plist_path = contents / "Info.plist"
+    if plist_path.is_file():
+        try:
+            with plist_path.open("rb") as f:
+                info = plistlib.load(f)
+            if isinstance(info, dict):
+                exe = info.get("CFBundleExecutable")
+                if isinstance(exe, str) and exe.strip():
+                    cands.append(macos_dir / exe.strip())
+        except Exception:
+            pass
+    for name in ("Electron", "Antigravity", "antigravity", "agy"):
+        cands.append(macos_dir / name)
+
+    mach = platform.machine().lower()
+    ls_names = (
+        ("language_server_macos_arm", "language_server_macos_x64")
+        if ("arm" in mach or "aarch64" in mach)
+        else ("language_server_macos_x64", "language_server_macos_arm")
+    )
+    ls_dir = contents / "Resources" / "app" / "extensions" / "antigravity" / "bin"
+    for name in ls_names:
+        cands.append(ls_dir / name)
+    bin_dir = contents / "Resources" / "app" / "bin"
+    for name in ("antigravity", "agy"):
+        cands.append(bin_dir / name)
+    return cands
+
+
+def _first_existing_file(candidates: list[Path]) -> Path | None:
+    for c in candidates:
+        try:
+            if (p := c.resolve()).is_file():
+                return p
+        except Exception:
+            pass
+    return None
 
 
 def find_binary(configured: str | None = "auto") -> Path | None:
@@ -314,7 +369,10 @@ def find_binary(configured: str | None = "auto") -> Path | None:
         if p.is_file():
             return p
         if p.is_dir():
-            for name in ("agy", "Antigravity", "antigravity"):
+            if p.suffix == ".app" or (p / "Contents").is_dir():
+                if found := _first_existing_file(_app_bundle_candidates(p)):
+                    return found
+            for name in ("agy", "Antigravity", "antigravity", "Electron"):
                 cand = (p / name).resolve()
                 if cand.is_file():
                     return cand
@@ -325,20 +383,27 @@ def find_binary(configured: str | None = "auto") -> Path | None:
         Path.home() / ".local/bin/agy", Path.home() / ".local/share/agy/bin/agy",
         home / "Library/Application Support/antigravity/bin/agy",
         Path("/usr/local/bin/agy"), Path("/usr/bin/agy"), Path("/opt/antigravity/bin/agy"), Path("/opt/agy/agy"),
-        Path("/Applications/Antigravity.app/Contents/MacOS/agy"),
-        Path("/Applications/Antigravity.app/Contents/MacOS/Antigravity"),
     ]
+
+    app_roots = list(dict.fromkeys([_cur_sys_apps(), home / "Applications", Path.home() / "Applications"]))
+    for root in app_roots:
+        for app_name in _MACOS_APP_NAMES:
+            app_dir = root / app_name
+            if app_dir.is_dir():
+                cands.extend(_app_bundle_candidates(app_dir))
+
+    cands.extend([
+        Path("/usr/share/antigravity/antigravity"),
+        Path("/opt/antigravity/antigravity"),
+        Path("/usr/local/bin/antigravity"),
+        Path("/usr/bin/antigravity"),
+    ])
+
     for name in ("agy", "antigravity", "Antigravity"):
         if w := shutil.which(name):
             cands.append(Path(w))
 
-    for c in cands:
-        try:
-            if (p := c.resolve()).is_file():
-                return p
-        except Exception:
-            pass
-    return None
+    return _first_existing_file(cands)
 
 
 def get_binary_status(bin_path: Path) -> str:

@@ -204,6 +204,55 @@ class TestPatcher(unittest.TestCase):
         app_bin.write_bytes(b"dummy")
         self.assertEqual(system.find_binary(str(cand_dir)), app_bin.resolve())
 
+    def test_find_binary_macos_app_bundle_configured_and_auto(self):
+        import plistlib
+        from unittest.mock import patch
+
+        apps_dir = self.temp_path / "Applications"
+        app_bundle = apps_dir / "Antigravity.app"
+        macos_dir = app_bundle / "Contents" / "MacOS"
+        macos_dir.mkdir(parents=True, exist_ok=True)
+        electron_bin = macos_dir / "Electron"
+        electron_bin.write_bytes(b"dummy")
+
+        # Without Info.plist: configured .app bundle dir resolves Electron
+        self.assertEqual(system.find_binary(str(app_bundle)), electron_bin.resolve())
+
+        # With Info.plist CFBundleExecutable pointing to custom binary name
+        custom_bin = macos_dir / "CustomEntry"
+        custom_bin.write_bytes(b"dummy")
+        plist_path = app_bundle / "Contents" / "Info.plist"
+        with plist_path.open("wb") as f:
+            plistlib.dump({"CFBundleExecutable": "CustomEntry"}, f)
+        self.assertEqual(system.find_binary(str(app_bundle)), custom_bin.resolve())
+
+        # Auto-discovery finds /Applications/Antigravity.app via _SYS_APPS
+        custom_bin.unlink()
+        with plist_path.open("wb") as f:
+            plistlib.dump({"CFBundleExecutable": "Electron"}, f)
+        with patch("core.system.user_home", return_value=self.temp_path / "empty_home"), \
+             patch("pathlib.Path.home", return_value=self.temp_path / "empty_home"), \
+             patch("core.system_linux._SYS_APPS", apps_dir), \
+             patch("shutil.which", return_value=None):
+            self.assertEqual(system.find_binary("auto"), electron_bin.resolve())
+
+    def test_find_binary_macos_user_applications_and_language_server_fallback(self):
+        from unittest.mock import patch
+
+        user_home_dir = self.temp_path / "user_home"
+        ide_app = user_home_dir / "Applications" / "Antigravity IDE.app"
+        ls_dir = ide_app / "Contents" / "Resources" / "app" / "extensions" / "antigravity" / "bin"
+        ls_dir.mkdir(parents=True, exist_ok=True)
+        ls_arm = ls_dir / "language_server_macos_arm"
+        ls_arm.write_bytes(b"dummy")
+
+        with patch("core.system.user_home", return_value=user_home_dir), \
+             patch("pathlib.Path.home", return_value=user_home_dir), \
+             patch("core.system_linux._SYS_APPS", self.temp_path / "no_sys_apps"), \
+             patch("platform.machine", return_value="arm64"), \
+             patch("shutil.which", return_value=None):
+            self.assertEqual(system.find_binary("auto"), ls_arm.resolve())
+
 
 @unittest.skipIf(sys.platform == "win32", "Linux/Unix-specific system tests skipped on Windows")
 class TestEndpointManager(unittest.TestCase):

@@ -159,7 +159,8 @@ def cmd_status(args, cfg: Config):
     print(f"{C_CYAN}{C_BOLD}=== Antigravity Bypass Status ==={C_RESET}")
     print(f"Конфигурация: {cfg.path}" + ("" if cfg.exists else f" {C_YELLOW}(файл не найден){C_RESET}"))
     bcol = C_GREEN if bst == "ALREADY_PATCHED" else C_YELLOW
-    print(f"1. Клиент:    {bcol}{bst}{C_RESET}")
+    bpath = f" ({bp})" if bp else ""
+    print(f"1. Клиент:    {bcol}{bst}{C_RESET}{bpath}")
     print(f"2. Эндпоинт:  {C_GREEN if has_ep else C_YELLOW}{ep_desc}{C_RESET}")
     active_ips = list(dict.fromkeys(ip for ip, _ in entries))
     active_doms = list(dict.fromkeys(d for _, d in entries))
