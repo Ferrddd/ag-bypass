@@ -647,10 +647,34 @@ class TestWindowsBinaryFinderAndPatcher(unittest.TestCase):
             "APPDATA": "",
             "ProgramFiles": "",
             "ProgramFiles(x86)": "",
+            "USERPROFILE": "",
         }
         with patch.dict(os.environ, clean_env), \
+             patch("core.system_windows.winreg", None), \
              patch("shutil.which", return_value=None):
             self.assertIsNone(system_windows.find_binary("auto"))
+
+    def test_find_binary_userprofile_agy_cli_and_lock_hint(self):
+        cli_exe = self.temp_path / ".antigravity" / "bin" / "agy.exe"
+        cli_exe.parent.mkdir(parents=True, exist_ok=True)
+        cli_exe.write_bytes(b"CLI_ineligible")
+
+        clean_env = {
+            "LOCALAPPDATA": "",
+            "APPDATA": "",
+            "ProgramFiles": "",
+            "ProgramFiles(x86)": "",
+            "USERPROFILE": str(self.temp_path),
+        }
+        with patch.dict(os.environ, clean_env), \
+             patch("core.system_windows.winreg", None), \
+             patch("shutil.which", return_value=None):
+            self.assertEqual(system_windows.find_binaries("auto"), [cli_exe.resolve()])
+
+        with patch("os.replace", side_effect=PermissionError(13, "Access is denied")):
+            ok, msg = system_windows.apply_patch(cli_exe)
+            self.assertFalse(ok)
+            self.assertIn("Закройте Antigravity", msg)
 
     def test_get_binary_status_variants(self):
         missing = self.temp_path / "missing.exe"

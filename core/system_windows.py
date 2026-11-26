@@ -252,11 +252,57 @@ def _win_dir_candidates(base_dir: Path) -> list[Path]:
     """Return candidate Antigravity executables inside an installation directory."""
     return [
         base_dir / "resources" / "bin" / "language_server.exe",
+        base_dir / "resources" / "app" / "extensions" / "antigravity" / "bin" / "language_server_windows_x64.exe",
         base_dir / "language_server.exe",
         base_dir / "Antigravity.exe",
         base_dir / "antigravity.exe",
         base_dir / "agy.exe",
     ]
+
+
+def _registry_install_dirs() -> list[Path]:
+    """Find Antigravity installation directories from Windows Uninstall registry keys."""
+    if winreg is None:
+        return []
+    dirs: list[Path] = []
+    roots = [
+        (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (winreg.HKEY_LOCAL_MACHINE, r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+    ]
+    for hive, subkey in roots:
+        try:
+            with winreg.OpenKey(hive, subkey) as key:
+                i = 0
+                while True:
+                    try:
+                        name = winreg.EnumKey(key, i)
+                        i += 1
+                    except OSError:
+                        break
+                    try:
+                        with winreg.OpenKey(key, name) as app_key:
+                            disp = ""
+                            try:
+                                disp, _ = winreg.QueryValueEx(app_key, "DisplayName")
+                            except OSError:
+                                pass
+                            if "antigravity" not in name.lower() and "antigravity" not in str(disp).lower():
+                                continue
+                            for val_name in ("InstallLocation", "DisplayIcon"):
+                                try:
+                                    raw_val, _ = winreg.QueryValueEx(app_key, val_name)
+                                    clean = str(raw_val).split(",", 1)[0].strip().strip('"')
+                                    if clean:
+                                        p = Path(clean)
+                                        dirs.append(p.parent if p.suffix.lower() == ".exe" else p)
+                                except OSError:
+                                    pass
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+    return dirs
 
 
 def _add_unique_file(found: list[Path], seen: set[Path], path: Path) -> None:
@@ -296,40 +342,38 @@ def find_binaries(configured: str | None = "auto") -> list[Path]:
     appdata = os.environ.get("APPDATA")
     prog_files = os.environ.get("ProgramFiles")
     prog_files_x86 = os.environ.get("ProgramFiles(x86)")
+    userprofile = os.environ.get("USERPROFILE")
 
     candidate_dirs = []
-    if local_appdata:
+    for base in [p for p in (local_appdata, appdata) if p]:
+        bp = Path(base)
         candidate_dirs.extend([
-            Path(local_appdata) / "Programs" / "antigravity",
-            Path(local_appdata) / "Programs" / "Antigravity",
-            Path(local_appdata) / "antigravity",
-            Path(local_appdata) / "Antigravity",
+            bp / "Programs" / "antigravity",
+            bp / "Programs" / "Antigravity",
+            bp / "Programs" / "Antigravity IDE",
+            bp / "antigravity",
+            bp / "Antigravity",
+            bp / "Antigravity IDE",
         ])
-    if appdata:
+    for pf in [p for p in (prog_files, prog_files_x86) if p]:
+        pfp = Path(pf)
         candidate_dirs.extend([
-            Path(appdata) / "Programs" / "antigravity",
-            Path(appdata) / "Programs" / "Antigravity",
-            Path(appdata) / "antigravity",
-            Path(appdata) / "Antigravity",
+            pfp / "Antigravity",
+            pfp / "antigravity",
+            pfp / "Antigravity IDE",
+            pfp / "Programs" / "antigravity",
+            pfp / "Programs" / "Antigravity",
         ])
-    if prog_files:
-        candidate_dirs.extend([
-            Path(prog_files) / "Antigravity",
-            Path(prog_files) / "antigravity",
-            Path(prog_files) / "Programs" / "antigravity",
-            Path(prog_files) / "Programs" / "Antigravity",
-        ])
-    if prog_files_x86:
-        candidate_dirs.extend([
-            Path(prog_files_x86) / "Antigravity",
-            Path(prog_files_x86) / "antigravity",
-            Path(prog_files_x86) / "Programs" / "antigravity",
-            Path(prog_files_x86) / "Programs" / "Antigravity",
-        ])
+    candidate_dirs.extend(_registry_install_dirs())
 
     found: list[Path] = []
     seen: set[Path] = set()
     seen_dirs: set[Path] = set()
+
+    if userprofile:
+        up = Path(userprofile)
+        for cli_cand in (up / ".antigravity" / "bin" / "agy.exe", up / ".local" / "bin" / "agy.exe"):
+            _add_unique_file(found, seen, cli_cand)
 
     for d in candidate_dirs:
         try:
@@ -346,8 +390,12 @@ def find_binaries(configured: str | None = "auto") -> list[Path]:
             wp = Path(w)
             try:
                 rwp = wp.resolve()
-                ls = (rwp.parent / "resources" / "bin" / "language_server.exe").resolve()
-                _add_unique_file(found, seen, ls if ls.is_file() else rwp)
+                ls = _first_existing_file([
+                    rwp.parent / "resources" / "bin" / "language_server.exe",
+                    rwp.parent.parent / "resources" / "bin" / "language_server.exe",
+                    rwp.parent / "resources" / "app" / "extensions" / "antigravity" / "bin" / "language_server_windows_x64.exe",
+                ])
+                _add_unique_file(found, seen, ls if ls else rwp)
             except Exception:
                 pass
 
@@ -359,9 +407,12 @@ def find_binaries(configured: str | None = "auto") -> list[Path]:
             if users_root.is_dir():
                 for u in sorted(users_root.iterdir()):
                     if u.is_dir() and u.name.lower() not in ("default", "public", "all users", "default user"):
+                        for cli_cand in (u / ".antigravity" / "bin" / "agy.exe", u / ".local" / "bin" / "agy.exe"):
+                            _add_unique_file(found, seen, cli_cand)
                         for base in (
                             u / "AppData" / "Local" / "Programs" / "antigravity",
                             u / "AppData" / "Local" / "Programs" / "Antigravity",
+                            u / "AppData" / "Local" / "Programs" / "Antigravity IDE",
                             u / "AppData" / "Local" / "antigravity",
                             u / "AppData" / "Local" / "Antigravity",
                         ):
@@ -439,6 +490,11 @@ def _patch_binary(bin_path: Path, old: bytes, new: bytes, apply_mode: bool) -> t
                 tmp.unlink()
             except Exception:
                 pass
+        if isinstance(e, PermissionError) or getattr(e, "winerror", None) in (5, 32):
+            return False, (
+                f"Файл заблокирован или недостаточно прав ({e}). "
+                "Закройте Antigravity (и процесс language_server.exe) и повторите от имени Администратора."
+            )
         return False, (f"Ошибка записи: {e}" if apply_mode else f"Ошибка отката патча: {e}")
 
 
