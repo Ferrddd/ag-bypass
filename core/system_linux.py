@@ -392,7 +392,7 @@ def find_binaries(configured: str | None = "auto") -> list[Path]:
         elif clean == "~":
             p = home.resolve()
         else:
-            p = Path(os.path.expanduser(clean)).resolve()
+            p = Path(os.path.expandvars(os.path.expanduser(clean))).resolve()
         if p.is_file():
             return [p]
         if p.is_dir():
@@ -413,8 +413,11 @@ def find_binaries(configured: str | None = "auto") -> list[Path]:
     # 1. CLI binaries (agy)
     cli_cands = [
         home / ".local/bin/agy", home / ".local/share/agy/bin/agy",
+        home / ".antigravity/bin/agy",
         Path.home() / ".local/bin/agy", Path.home() / ".local/share/agy/bin/agy",
+        Path.home() / ".antigravity/bin/agy",
         home / "Library/Application Support/antigravity/bin/agy",
+        Path("/opt/homebrew/bin/agy"),
         Path("/usr/local/bin/agy"), Path("/usr/bin/agy"), Path("/opt/antigravity/bin/agy"), Path("/opt/agy/agy"),
     ]
     if w := shutil.which("agy"):
@@ -492,21 +495,38 @@ def _is_macho_file(path: Path) -> bool:
         return False
 
 
-def _resign_macos_macho(path: Path) -> bool | None:
-    """Re-sign a patched Mach-O binary on macOS; returns None if not applicable."""
+def _resign_macos_macho(path: Path) -> tuple[bool | None, str]:
+    """Re-sign a patched Mach-O binary on macOS; returns (None, '') if not applicable."""
     if sys.platform != "darwin" or not _is_macho_file(path):
-        return None
+        return None, ""
     if not shutil.which("codesign"):
-        return False
+        return False, "утилита codesign не найдена"
     try:
         res = subprocess.run(
             ["codesign", "--force", "--sign", "-", str(path)],
             capture_output=True,
-            timeout=15,
+            text=True,
+            timeout=30,
         )
-        return res.returncode == 0
-    except Exception:
-        return False
+        if res.returncode == 0:
+            return True, ""
+        detail = (res.stderr or res.stdout or "").strip()
+        return False, detail or f"код {res.returncode}"
+    except Exception as e:
+        return False, str(e)
+
+
+def _format_patch_write_error(real_bin: Path, err: Exception) -> str:
+    if sys.platform == "darwin" and (
+        isinstance(err, PermissionError)
+        or getattr(err, "errno", None) in (errno.EPERM, errno.EACCES)
+    ) and ".app/" in str(real_bin):
+        return (
+            f"Нет прав на изменение файла внутри .app на macOS ({err}). "
+            "Включите «Управление приложениями» (App Management) для вашего терминала "
+            "в System Settings -> Privacy & Security -> App Management и перезапустите терминал."
+        )
+    return f"Ошибка записи: {err}"
 
 
 def apply_patch(bin_path: Path) -> tuple[bool, str]:
@@ -528,11 +548,11 @@ def apply_patch(bin_path: Path) -> tuple[bool, str]:
         tmp.write_bytes(d.replace(SIG_ORIGINAL, SIG_PATCHED))
         _apply_perms(tmp, st)
         os.replace(tmp, real_bin)
-        resigned = _resign_macos_macho(real_bin)
+        resigned, cs_err = _resign_macos_macho(real_bin)
         if resigned is True:
             return True, "Бинарник успешно пропатчен и переподписан"
         if resigned is False:
-            return True, "Бинарник пропатчен, но не удалось переподписать через codesign"
+            return True, f"Бинарник пропатчен, но не удалось переподписать через codesign ({cs_err})"
         return True, "Бинарник успешно пропатчен"
     except Exception as e:
         if tmp.exists():
@@ -540,7 +560,7 @@ def apply_patch(bin_path: Path) -> tuple[bool, str]:
                 tmp.unlink()
             except Exception:
                 pass
-        return False, f"Ошибка записи: {e}"
+        return False, _format_patch_write_error(real_bin, e)
 
 
 def restore_backup(bin_path: Path) -> tuple[bool, str]:
@@ -581,7 +601,9 @@ def restore_backup(bin_path: Path) -> tuple[bool, str]:
         tmp.write_bytes(d.replace(SIG_PATCHED, SIG_ORIGINAL))
         _apply_perms(tmp, st)
         os.replace(tmp, real_bin)
-        _resign_macos_macho(real_bin)
+        resigned, cs_err = _resign_macos_macho(real_bin)
+        if resigned is False:
+            return True, f"Патч откачен, но не удалось переподписать через codesign ({cs_err})"
         return True, "Патч успешно откачен"
     except Exception as e:
         if tmp.exists():
@@ -589,7 +611,7 @@ def restore_backup(bin_path: Path) -> tuple[bool, str]:
                 tmp.unlink()
             except Exception:
                 pass
-        return False, f"Ошибка отката патча: {e}"
+        return False, _format_patch_write_error(real_bin, e)
 
 
 # =====================================================================

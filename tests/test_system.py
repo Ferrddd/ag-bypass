@@ -277,7 +277,7 @@ class TestPatcher(unittest.TestCase):
         bin_file = self.temp_path / "language_server"
         bin_file.write_bytes(b"\xcf\xfa\xed\xfe_PAYLOAD_ineligible_END")
 
-        mock_res = MagicMock(returncode=0)
+        mock_res = MagicMock(returncode=0, stderr="", stdout="")
         with patch.object(sys, "platform", "darwin"), \
              patch("shutil.which", return_value="/usr/bin/codesign"), \
              patch("subprocess.run", return_value=mock_res) as mock_run:
@@ -288,8 +288,22 @@ class TestPatcher(unittest.TestCase):
             mock_run.assert_called_once_with(
                 ["codesign", "--force", "--sign", "-", str(bin_file.resolve())],
                 capture_output=True,
-                timeout=15,
+                text=True,
+                timeout=30,
             )
+
+    def test_apply_patch_macos_app_permission_hint(self):
+        from unittest.mock import patch
+
+        app_bin = self.temp_path / "Antigravity.app" / "Contents" / "Resources" / "bin" / "language_server"
+        app_bin.parent.mkdir(parents=True, exist_ok=True)
+        app_bin.write_bytes(b"PAYLOAD_ineligible_END")
+
+        with patch.object(sys, "platform", "darwin"), \
+             patch("pathlib.Path.write_bytes", side_effect=PermissionError(1, "Operation not permitted")):
+            ok, msg = system.apply_patch(app_bin)
+            self.assertFalse(ok)
+            self.assertIn("App Management", msg)
 
     def test_find_binaries_discovers_both_cli_and_gui(self):
         from unittest.mock import patch

@@ -18,6 +18,7 @@ chmod +x "${BIN_SRC}"
 
 # Target binary directory
 if [ "$EUID" -eq 0 ]; then
+    mkdir -p /usr/local/bin
     TARGET_BIN="/usr/local/bin/ag"
 else
     mkdir -p "${HOME}/.local/bin"

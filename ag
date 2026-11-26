@@ -129,7 +129,7 @@ def cmd_on(args, cfg: Config):
         sys.exit(1)
     nodes_label = f"[{', '.join(chosen_ips)}]" if len(chosen_ips) > 1 else chosen_ips[0]
     print(f"      {C_GREEN}[✓] {nodes_label} -> {', '.join(cfg.domains)} прописан в {system.DEFAULT_HOSTS_PATH}{C_RESET}")
-    print(f"\n{C_GREEN}{C_BOLD}[✓] Обход активирован! Antigravity CLI готов к работе.{C_RESET}")
+    print(f"\n{C_GREEN}{C_BOLD}[✓] Обход активирован! Antigravity готов к работе.{C_RESET}")
 
 
 def cmd_off(args, cfg: Config):
