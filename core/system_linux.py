@@ -314,9 +314,26 @@ def _cur_sys_apps() -> Path:
 
 def _app_bundle_candidates(app_dir: Path) -> list[Path]:
     """Return candidate executable paths inside a macOS .app bundle."""
-    cands: list[Path] = []
     contents = app_dir / "Contents"
     macos_dir = contents / "MacOS"
+    cands: list[Path] = [
+        contents / "Resources" / "bin" / "language_server",
+    ]
+
+    mach = platform.machine().lower()
+    ls_names = (
+        ("language_server_macos_arm", "language_server_macos_x64")
+        if ("arm" in mach or "aarch64" in mach)
+        else ("language_server_macos_x64", "language_server_macos_arm")
+    )
+    ls_dir = contents / "Resources" / "app" / "extensions" / "antigravity" / "bin"
+    for name in ls_names:
+        cands.append(ls_dir / name)
+
+    bin_dir = contents / "Resources" / "app" / "bin"
+    for name in ("antigravity", "agy"):
+        cands.append(bin_dir / name)
+
     plist_path = contents / "Info.plist"
     if plist_path.is_file():
         try:
@@ -330,19 +347,6 @@ def _app_bundle_candidates(app_dir: Path) -> list[Path]:
             pass
     for name in ("Electron", "Antigravity", "antigravity", "agy"):
         cands.append(macos_dir / name)
-
-    mach = platform.machine().lower()
-    ls_names = (
-        ("language_server_macos_arm", "language_server_macos_x64")
-        if ("arm" in mach or "aarch64" in mach)
-        else ("language_server_macos_x64", "language_server_macos_arm")
-    )
-    ls_dir = contents / "Resources" / "app" / "extensions" / "antigravity" / "bin"
-    for name in ls_names:
-        cands.append(ls_dir / name)
-    bin_dir = contents / "Resources" / "app" / "bin"
-    for name in ("antigravity", "agy"):
-        cands.append(bin_dir / name)
     return cands
 
 
@@ -372,7 +376,7 @@ def find_binary(configured: str | None = "auto") -> Path | None:
             if p.suffix == ".app" or (p / "Contents").is_dir():
                 if found := _first_existing_file(_app_bundle_candidates(p)):
                     return found
-            for name in ("agy", "Antigravity", "antigravity", "Electron"):
+            for name in ("language_server", "agy", "Antigravity", "antigravity", "Electron"):
                 cand = (p / name).resolve()
                 if cand.is_file():
                     return cand
@@ -393,6 +397,8 @@ def find_binary(configured: str | None = "auto") -> Path | None:
                 cands.extend(_app_bundle_candidates(app_dir))
 
     cands.extend([
+        Path("/usr/share/antigravity/resources/bin/language_server"),
+        Path("/opt/antigravity/resources/bin/language_server"),
         Path("/usr/share/antigravity/antigravity"),
         Path("/opt/antigravity/antigravity"),
         Path("/usr/local/bin/antigravity"),
@@ -415,6 +421,41 @@ def get_binary_status(bin_path: Path) -> str:
         return "ALREADY_PATCHED" if SIG_PATCHED in d else ("READY_TO_PATCH" if SIG_ORIGINAL in d else "SIGNATURE_NOT_FOUND")
     except Exception as e:
         return f"ERROR: {e}"
+
+
+_MACHO_MAGICS = (
+    b"\xfe\xed\xfa\xce",
+    b"\xce\xfa\xed\xfe",
+    b"\xfe\xed\xfa\xcf",
+    b"\xcf\xfa\xed\xfe",
+    b"\xca\xfe\xba\xbe",
+    b"\xbe\xba\xfe\xca",
+)
+
+
+def _is_macho_file(path: Path) -> bool:
+    try:
+        with path.open("rb") as f:
+            return f.read(4) in _MACHO_MAGICS
+    except Exception:
+        return False
+
+
+def _resign_macos_macho(path: Path) -> bool | None:
+    """Re-sign a patched Mach-O binary on macOS; returns None if not applicable."""
+    if sys.platform != "darwin" or not _is_macho_file(path):
+        return None
+    if not shutil.which("codesign"):
+        return False
+    try:
+        res = subprocess.run(
+            ["codesign", "--force", "--sign", "-", str(path)],
+            capture_output=True,
+            timeout=15,
+        )
+        return res.returncode == 0
+    except Exception:
+        return False
 
 
 def apply_patch(bin_path: Path) -> tuple[bool, str]:
@@ -444,6 +485,11 @@ def apply_patch(bin_path: Path) -> tuple[bool, str]:
         tmp.write_bytes(d.replace(SIG_ORIGINAL, SIG_PATCHED))
         _apply_perms(tmp, st)
         os.replace(tmp, real_bin)
+        resigned = _resign_macos_macho(real_bin)
+        if resigned is True:
+            return True, f"Бинарник успешно пропатчен и переподписан (бэкап сохранён в {bak.name})"
+        if resigned is False:
+            return True, f"Бинарник пропатчен (бэкап сохранён в {bak.name}), но не удалось переподписать через codesign"
         return True, f"Бинарник успешно пропатчен (бэкап сохранён в {bak.name})"
     except Exception as e:
         if tmp.exists():

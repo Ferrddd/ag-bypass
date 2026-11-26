@@ -570,6 +570,18 @@ class TestWindowsBinaryFinderAndPatcher(unittest.TestCase):
         bin_file.write_bytes(b"dummy")
         self.assertEqual(system_windows.find_binary(str(prog_dir)), bin_file.resolve())
 
+    def test_find_binary_prefers_resources_bin_language_server_exe(self):
+        prog_dir = self.temp_path / "Programs" / "antigravity"
+        ls_dir = prog_dir / "resources" / "bin"
+        ls_dir.mkdir(parents=True, exist_ok=True)
+        (prog_dir / "Antigravity.exe").write_bytes(b"stub")
+        ls_exe = ls_dir / "language_server.exe"
+        ls_exe.write_bytes(b"real_ls")
+
+        with patch.dict(os.environ, {"LOCALAPPDATA": str(self.temp_path)}):
+            self.assertEqual(system_windows.find_binary("auto"), ls_exe.resolve())
+        self.assertEqual(system_windows.find_binary(str(prog_dir)), ls_exe.resolve())
+
     def test_find_binary_auto_localappdata_direct(self):
         agy_path = self.temp_path / "antigravity" / "agy.exe"
         agy_path.parent.mkdir(parents=True, exist_ok=True)

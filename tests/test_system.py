@@ -253,6 +253,46 @@ class TestPatcher(unittest.TestCase):
              patch("shutil.which", return_value=None):
             self.assertEqual(system.find_binary("auto"), ls_arm.resolve())
 
+    def test_find_binary_macos_prefers_resources_bin_language_server(self):
+        from unittest.mock import patch
+
+        apps_dir = self.temp_path / "Applications"
+        app_bundle = apps_dir / "Antigravity.app"
+        macos_dir = app_bundle / "Contents" / "MacOS"
+        ls_dir = app_bundle / "Contents" / "Resources" / "bin"
+        macos_dir.mkdir(parents=True, exist_ok=True)
+        ls_dir.mkdir(parents=True, exist_ok=True)
+        (macos_dir / "Antigravity").write_bytes(b"stub")
+        ls_bin = ls_dir / "language_server"
+        ls_bin.write_bytes(b"real_ls")
+
+        self.assertEqual(system.find_binary(str(app_bundle)), ls_bin.resolve())
+        with patch("core.system.user_home", return_value=self.temp_path / "empty_home"), \
+             patch("pathlib.Path.home", return_value=self.temp_path / "empty_home"), \
+             patch("core.system_linux._SYS_APPS", apps_dir), \
+             patch("shutil.which", return_value=None):
+            self.assertEqual(system.find_binary("auto"), ls_bin.resolve())
+
+    def test_apply_patch_resigns_macho_on_darwin(self):
+        from unittest.mock import MagicMock, patch
+
+        bin_file = self.temp_path / "language_server"
+        bin_file.write_bytes(b"\xcf\xfa\xed\xfe_PAYLOAD_ineligible_END")
+
+        mock_res = MagicMock(returncode=0)
+        with patch.object(sys, "platform", "darwin"), \
+             patch("shutil.which", return_value="/usr/bin/codesign"), \
+             patch("subprocess.run", return_value=mock_res) as mock_run:
+            ok, msg = system.apply_patch(bin_file)
+            self.assertTrue(ok)
+            self.assertIn("переподписан", msg)
+            self.assertEqual(bin_file.read_bytes(), b"\xcf\xfa\xed\xfe_PAYLOAD_inexigible_END")
+            mock_run.assert_called_once_with(
+                ["codesign", "--force", "--sign", "-", str(bin_file.resolve())],
+                capture_output=True,
+                timeout=15,
+            )
+
 
 @unittest.skipIf(sys.platform == "win32", "Linux/Unix-specific system tests skipped on Windows")
 class TestEndpointManager(unittest.TestCase):

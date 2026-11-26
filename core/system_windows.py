@@ -250,6 +250,17 @@ def get_endpoint_status() -> tuple[bool, str]:
 # Binary Finder & Patcher (Antigravity.exe / agy.exe ineligible -> inexigible)
 # =====================================================================
 
+def _win_dir_candidates(base_dir: Path) -> list[Path]:
+    """Return candidate Antigravity executables inside an installation directory."""
+    return [
+        base_dir / "resources" / "bin" / "language_server.exe",
+        base_dir / "language_server.exe",
+        base_dir / "Antigravity.exe",
+        base_dir / "antigravity.exe",
+        base_dir / "agy.exe",
+    ]
+
+
 def find_binary(configured: str | None = "auto") -> Path | None:
     if configured and configured != "auto":
         clean = configured.strip().strip('"').strip("'")
@@ -258,10 +269,10 @@ def find_binary(configured: str | None = "auto") -> Path | None:
         if p.is_file():
             return p
         if p.is_dir():
-            for name in ("Antigravity.exe", "antigravity.exe", "agy.exe", "Antigravity", "antigravity", "agy"):
-                cand = (p / name).resolve()
-                if cand.is_file():
-                    return cand
+            for cand in _win_dir_candidates(p) + [p / "Antigravity", p / "antigravity", p / "agy"]:
+                rc = cand.resolve()
+                if rc.is_file():
+                    return rc
         return None
 
     cands = []
@@ -300,12 +311,10 @@ def find_binary(configured: str | None = "auto") -> Path | None:
             Path(prog_files_x86) / "Programs" / "Antigravity",
         ])
 
-    exe_names = ("Antigravity.exe", "antigravity.exe", "agy.exe")
     for d in candidate_dirs:
-        for name in exe_names:
-            cands.append(d / name)
+        cands.extend(_win_dir_candidates(d))
 
-    for name in ("Antigravity.exe", "antigravity.exe", "agy.exe", "Antigravity", "antigravity", "agy"):
+    for name in ("language_server.exe", "Antigravity.exe", "antigravity.exe", "agy.exe", "Antigravity", "antigravity", "agy"):
         if w := shutil.which(name):
             cands.append(Path(w))
 
@@ -330,8 +339,8 @@ def find_binary(configured: str | None = "auto") -> Path | None:
                             u / "AppData" / "Local" / "antigravity",
                             u / "AppData" / "Local" / "Antigravity",
                         ):
-                            for name in exe_names:
-                                cand = (base / name).resolve()
+                            for cand_path in _win_dir_candidates(base):
+                                cand = cand_path.resolve()
                                 if cand.is_file():
                                     return cand
         except Exception:
