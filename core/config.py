@@ -35,6 +35,26 @@ def find_config(path: str | Path | None = None) -> Path:
     return project_cfg
 
 
+def _parse_int(val, default: int, min_val: int = 1, max_val: int | None = None) -> int:
+    try:
+        n = int(val or default)
+    except (ValueError, TypeError):
+        return default
+    if n < min_val or (max_val is not None and n > max_val):
+        return default
+    return n
+
+
+def _parse_float(val, default: float, allow_zero: bool = False) -> float:
+    try:
+        n = float(val if val not in (None, "") else default)
+    except (ValueError, TypeError):
+        return default
+    if (n >= 0) if allow_zero else (n > 0):
+        return n
+    return default
+
+
 class Config:
     def __init__(self, config_path: str | Path | None = None):
         self.path = find_config(config_path)
@@ -70,16 +90,8 @@ class Config:
             self.doh_servers = [doh.strip()]
         else:
             self.doh_servers = []
-        try:
-            p = int(dns_dict.get("port") or 53)
-            self.smart_dns_port = p if 1 <= p <= 65535 else 53
-        except (ValueError, TypeError):
-            self.smart_dns_port = 53
-        try:
-            t = float(dns_dict.get("timeout_seconds") or 3.0)
-            self.smart_dns_timeout = t if t > 0 else 3.0
-        except (ValueError, TypeError):
-            self.smart_dns_timeout = 3.0
+        self.smart_dns_port = _parse_int(dns_dict.get("port"), 53, 1, 65535)
+        self.smart_dns_timeout = _parse_float(dns_dict.get("timeout_seconds"), 3.0)
 
         # Статические узлы
         nodes = cfg.get("nodes")
@@ -103,36 +115,12 @@ class Config:
         self.binary_path = str(cfg.get("binary_path") or "auto").strip()
 
         # Healthcheck
-        try:
-            mi = int(cfg.get("max_hosts_ips") or hc.get("max_hosts_ips") or 2)
-            self.max_hosts_ips = mi if mi > 0 else 2
-        except (ValueError, TypeError):
-            self.max_hosts_ips = 2
-        try:
-            cp = int(hc.get("probe_port") or 443)
-            self.check_port = cp if 1 <= cp <= 65535 else 443
-        except (ValueError, TypeError):
-            self.check_port = 443
-        try:
-            ct = float(hc.get("connect_timeout_seconds") or 2.5)
-            self.check_timeout = ct if ct > 0 else 2.5
-        except (ValueError, TypeError):
-            self.check_timeout = 2.5
-        try:
-            im = int(hc.get("interval_minutes") or 2)
-            self.check_interval_minutes = im if im > 0 else 2
-        except (ValueError, TypeError):
-            self.check_interval_minutes = 2
-        try:
-            cr = int(hc.get("retries") or 3)
-            self.check_retries = cr if cr > 0 else 3
-        except (ValueError, TypeError):
-            self.check_retries = 3
-        try:
-            rd = float(hc.get("retry_delay_seconds") or 1.0)
-            self.check_retry_delay = rd if rd >= 0 else 1.0
-        except (ValueError, TypeError):
-            self.check_retry_delay = 1.0
+        self.max_hosts_ips = _parse_int(cfg.get("max_hosts_ips") or hc.get("max_hosts_ips"), 2)
+        self.check_port = _parse_int(hc.get("probe_port"), 443, 1, 65535)
+        self.check_timeout = _parse_float(hc.get("connect_timeout_seconds"), 2.5)
+        self.check_interval_minutes = _parse_int(hc.get("interval_minutes"), 2)
+        self.check_retries = _parse_int(hc.get("retries"), 3)
+        self.check_retry_delay = _parse_float(hc.get("retry_delay_seconds"), 1.0, allow_zero=True)
 
     def validate(self) -> list[str]:
         errs = []

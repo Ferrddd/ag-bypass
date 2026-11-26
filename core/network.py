@@ -10,9 +10,13 @@ import time
 # DNS Resolution & Queries
 # =====================================================================
 
+def _is_invalid_ip(ip: str) -> bool:
+    return not ip or ip in ("0.0.0.0", "255.255.255.255", "::") or ip.startswith("0.")
+
+
 def resolve_target(target: str | None) -> str | None:
     """Разрешает имя хоста в IPv4 или возвращает IP, если уже передан IP."""
-    if not (t := (target or "").strip()) or t in ("0.0.0.0", "255.255.255.255") or t.startswith("0."):
+    if _is_invalid_ip(t := (target or "").strip()):
         return None
     try:
         socket.inet_aton(t)
@@ -21,7 +25,7 @@ def resolve_target(target: str | None) -> str | None:
         pass
     try:
         ip = socket.getaddrinfo(t, 53, socket.AF_INET, socket.SOCK_DGRAM)[0][4][0]
-        return None if ip in ("0.0.0.0", "255.255.255.255") or ip.startswith("0.") else ip
+        return None if _is_invalid_ip(ip) else ip
     except Exception:
         return None
 
@@ -64,7 +68,7 @@ def _parse_dns_response(data: bytes, qid: int) -> list[str]:
             off += 10
             if rtype == 1 and rdlen == 4 and off + 4 <= len(data):
                 ip = socket.inet_ntoa(data[off : off + 4])
-                if ip not in ips and ip not in ("0.0.0.0", "255.255.255.255") and not ip.startswith("0."):
+                if ip not in ips and not _is_invalid_ip(ip):
                     ips.append(ip)
             off += rdlen
         return ips
@@ -125,16 +129,7 @@ def query_all_dns_servers(servers: list[str], domain: str, port: int = 53, timeo
     if not cleaned:
         return []
     with ThreadPoolExecutor(max_workers=min(len(cleaned), 8)) as ex:
-        futs = {ex.submit(query_dns_server, s, domain, port, timeout, retries): s for s in cleaned}
-        results = []
-        for f in as_completed(futs):
-            s = futs[f]
-            try:
-                results.append(f.result())
-            except Exception as e:
-                results.append({"server": s, "dns_ip": None, "ips": [], "error": str(e)})
-        order = {s: i for i, s in enumerate(cleaned)}
-        return sorted(results, key=lambda r: order.get(r["server"], 999))
+        return list(ex.map(lambda s: query_dns_server(s, domain, port, timeout, retries), cleaned))
 
 
 DEFAULT_DOH_SERVERS = [
@@ -164,7 +159,7 @@ def query_doh_server(url: str, domain: str, timeout: float = 3.0) -> list[str]:
             for ans in data.get("Answer", []):
                 if ans.get("type") == 1:
                     ip = str(ans.get("data", "")).strip()
-                    if ip and ip not in ("0.0.0.0", "255.255.255.255") and not ip.startswith("0.") and ip not in ips:
+                    if not _is_invalid_ip(ip) and ip not in ips:
                         try:
                             socket.inet_aton(ip)
                             ips.append(ip)
@@ -179,19 +174,17 @@ def query_all_doh_servers(servers: list[str], domain: str, timeout: float = 3.0)
     cleaned = list(dict.fromkeys(s.strip() for s in (servers or []) if s and s.strip()))
     if not cleaned:
         return []
+
+    def _run_doh(s: str) -> dict:
+        try:
+            ips = query_doh_server(s, domain, timeout)
+            err = None if ips else f"DoH {s} не вернул A-записей ({timeout}с)"
+            return {"server": s, "dns_ip": s, "ips": ips, "error": err, "doh": True}
+        except Exception as e:
+            return {"server": s, "dns_ip": s, "ips": [], "error": str(e), "doh": True}
+
     with ThreadPoolExecutor(max_workers=min(len(cleaned), 4)) as ex:
-        futs = {ex.submit(query_doh_server, s, domain, timeout): s for s in cleaned}
-        results = []
-        for f in as_completed(futs):
-            s = futs[f]
-            try:
-                ips = f.result()
-                err = None if ips else f"DoH {s} не вернул A-записей ({timeout}с)"
-                results.append({"server": s, "dns_ip": s, "ips": ips, "error": err, "doh": True})
-            except Exception as e:
-                results.append({"server": s, "dns_ip": s, "ips": [], "error": str(e), "doh": True})
-        order = {s: i for i, s in enumerate(cleaned)}
-        return sorted(results, key=lambda r: order.get(r["server"], 999))
+        return list(ex.map(_run_doh, cleaned))
 
 
 class ResolutionResult:
@@ -251,7 +244,7 @@ def get_candidate_ips(config, domain: str) -> tuple[list[str], ResolutionResult]
 
 def test_ip(ip: str, domain: str, port: int = 443, timeout: float = 2.5) -> tuple[bool, float, str]:
     """Выполняет реальный TLS SNI-хэндшейк и HEAD-запрос к узлу."""
-    if not ip or not (clean_ip := str(ip).strip()) or clean_ip in ("0.0.0.0", "255.255.255.255", "::") or clean_ip.startswith("0."):
+    if not ip or _is_invalid_ip(clean_ip := str(ip).strip()):
         return False, 0.0, "Некорректный IP"
     if not domain or not (clean_dom := str(domain).strip()) or any(c in clean_dom for c in ("\r", "\n", " ", "\t")):
         return False, 0.0, "Некорректный домен"
@@ -341,8 +334,8 @@ def check_and_heal(config, quiet: bool = False) -> tuple[str, str]:
         return "DISABLED", "Обход не включен в hosts"
 
     domain = config.domains[0] if config.domains else "daily-cloudcode-pa.googleapis.com"
-    cur_ips = list(dict.fromkeys(ip for ip, d in entries if d == domain or entries))
-    primary_ip = cur_ips[0] if cur_ips else entries[0][0]
+    cur_ips = list(dict.fromkeys(ip for ip, d in entries if d == domain)) or [entries[0][0]]
+    primary_ip = cur_ips[0]
     alive, lat, detail = test_ip_with_retries(
         primary_ip, domain, port=config.check_port, timeout=config.check_timeout,
         retries=config.check_retries, delay=config.check_retry_delay

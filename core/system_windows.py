@@ -1,5 +1,5 @@
 """Antigravity System Module for Windows"""
-import errno
+import mmap
 import os
 import re
 import shutil
@@ -95,19 +95,22 @@ def _write_hosts(hosts_path: Path, content: str):
                 pass
 
 
+def _strip_hosts_block(raw: str) -> str:
+    clean = re.sub(rf"{TAG_BEGIN}.*?{TAG_END}\n?", "", raw, flags=re.DOTALL)
+    if TAG_BEGIN in clean:
+        clean = re.sub(rf"{TAG_BEGIN}.*$", "", clean, flags=re.DOTALL)
+    if TAG_END in clean:
+        clean = clean.replace(TAG_END, "")
+    return clean.rstrip()
+
+
 def set_entries(entries: list[tuple[str, str]], hosts_path: Path = DEFAULT_HOSTS_PATH) -> tuple[bool, str]:
     if not hosts_path.is_file():
         return False, f"Файл не найден: {hosts_path}"
     if not entries:
         return clear_entries(hosts_path)
     try:
-        raw = hosts_path.read_text(encoding="utf-8")
-        clean = re.sub(rf"{TAG_BEGIN}.*?{TAG_END}\n?", "", raw, flags=re.DOTALL)
-        if TAG_BEGIN in clean:
-            clean = re.sub(rf"{TAG_BEGIN}.*$", "", clean, flags=re.DOTALL)
-        if TAG_END in clean:
-            clean = clean.replace(TAG_END, "")
-        clean = clean.rstrip()
+        clean = _strip_hosts_block(hosts_path.read_text(encoding="utf-8"))
         seen = set()
         clean_entries = []
         for ip, d in entries:
@@ -134,12 +137,7 @@ def clear_entries(hosts_path: Path = DEFAULT_HOSTS_PATH) -> tuple[bool, str]:
         raw = hosts_path.read_text(encoding="utf-8")
         if TAG_BEGIN not in raw and TAG_END not in raw:
             return True, "Блок обхода отсутствует в hosts"
-        clean = re.sub(rf"{TAG_BEGIN}.*?{TAG_END}\n?", "", raw, flags=re.DOTALL)
-        if TAG_BEGIN in clean:
-            clean = re.sub(rf"{TAG_BEGIN}.*$", "", clean, flags=re.DOTALL)
-        if TAG_END in clean:
-            clean = clean.replace(TAG_END, "")
-        clean = clean.rstrip()
+        clean = _strip_hosts_block(raw)
         _write_hosts(hosts_path, (clean + "\n") if clean else "")
         flush_dns_cache()
         return True, "Блок обхода успешно удалён из hosts"
@@ -385,10 +383,33 @@ def get_binary_status(bin_path: Path) -> str:
     if not real_bin.is_file():
         return "FILE_NOT_FOUND"
     try:
-        d = real_bin.read_bytes()
-        return "ALREADY_PATCHED" if SIG_PATCHED in d else ("READY_TO_PATCH" if SIG_ORIGINAL in d else "SIGNATURE_NOT_FOUND")
+        if real_bin.stat().st_size == 0:
+            return "SIGNATURE_NOT_FOUND"
+        with real_bin.open("rb") as f:
+            try:
+                with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                    if mm.find(SIG_PATCHED) != -1:
+                        return "ALREADY_PATCHED"
+                    return "READY_TO_PATCH" if mm.find(SIG_ORIGINAL) != -1 else "SIGNATURE_NOT_FOUND"
+            except (ValueError, OSError):
+                d = f.read()
+                return "ALREADY_PATCHED" if SIG_PATCHED in d else ("READY_TO_PATCH" if SIG_ORIGINAL in d else "SIGNATURE_NOT_FOUND")
     except Exception as e:
         return f"ERROR: {e}"
+
+
+def _atomic_write_binary(real_bin: Path, content: bytes) -> None:
+    tmp = real_bin.with_name(f"{real_bin.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_bytes(content)
+        os.replace(tmp, real_bin)
+    except Exception:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except Exception:
+                pass
+        raise
 
 
 def apply_patch(bin_path: Path) -> tuple[bool, str]:
@@ -404,17 +425,10 @@ def apply_patch(bin_path: Path) -> tuple[bool, str]:
     if SIG_ORIGINAL not in d:
         return False, "Сигнатура 'ineligible' не найдена в бинарнике"
 
-    tmp = real_bin.with_name(f"{real_bin.name}.{os.getpid()}.tmp")
     try:
-        tmp.write_bytes(d.replace(SIG_ORIGINAL, SIG_PATCHED))
-        os.replace(tmp, real_bin)
+        _atomic_write_binary(real_bin, d.replace(SIG_ORIGINAL, SIG_PATCHED))
         return True, "Бинарник успешно пропатчен"
     except Exception as e:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except Exception:
-                pass
         return False, f"Ошибка записи: {e}"
 
 
@@ -422,21 +436,14 @@ def restore_backup(bin_path: Path) -> tuple[bool, str]:
     real_bin = bin_path.resolve()
     bak = real_bin.with_name(real_bin.name + ".bak")
     if bak.is_file():
-        tmp = real_bin.with_name(f"{real_bin.name}.{os.getpid()}.tmp")
         try:
-            shutil.copy2(bak, tmp)
-            os.replace(tmp, real_bin)
+            _atomic_write_binary(real_bin, bak.read_bytes())
             try:
                 bak.unlink()
             except Exception:
                 pass
             return True, f"Оригинальный бинарник восстановлен из {bak.name}"
         except Exception as e:
-            if tmp.exists():
-                try:
-                    tmp.unlink()
-                except Exception:
-                    pass
             return False, f"Ошибка восстановления бэкапа: {e}"
 
     if not real_bin.is_file():
@@ -448,17 +455,10 @@ def restore_backup(bin_path: Path) -> tuple[bool, str]:
     if SIG_PATCHED not in d:
         return False, "Патч не обнаружен в бинарнике"
 
-    tmp = real_bin.with_name(f"{real_bin.name}.{os.getpid()}.tmp")
     try:
-        tmp.write_bytes(d.replace(SIG_PATCHED, SIG_ORIGINAL))
-        os.replace(tmp, real_bin)
+        _atomic_write_binary(real_bin, d.replace(SIG_PATCHED, SIG_ORIGINAL))
         return True, "Патч успешно откачен"
     except Exception as e:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except Exception:
-                pass
         return False, f"Ошибка отката патча: {e}"
 
 

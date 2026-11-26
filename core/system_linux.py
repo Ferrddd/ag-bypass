@@ -1,5 +1,6 @@
 """Antigravity System Module for Linux"""
 import errno
+import mmap
 import os
 import platform
 import plistlib
@@ -150,19 +151,22 @@ def _write_hosts(hosts_path: Path, content: str):
                 pass
 
 
+def _strip_hosts_block(raw: str) -> str:
+    clean = re.sub(rf"{TAG_BEGIN}.*?{TAG_END}\n?", "", raw, flags=re.DOTALL)
+    if TAG_BEGIN in clean:
+        clean = re.sub(rf"{TAG_BEGIN}.*$", "", clean, flags=re.DOTALL)
+    if TAG_END in clean:
+        clean = clean.replace(TAG_END, "")
+    return clean.rstrip()
+
+
 def set_entries(entries: list[tuple[str, str]], hosts_path: Path = DEFAULT_HOSTS_PATH) -> tuple[bool, str]:
     if not hosts_path.is_file():
         return False, f"Файл не найден: {hosts_path}"
     if not entries:
         return clear_entries(hosts_path)
     try:
-        raw = hosts_path.read_text(encoding="utf-8")
-        clean = re.sub(rf"{TAG_BEGIN}.*?{TAG_END}\n?", "", raw, flags=re.DOTALL)
-        if TAG_BEGIN in clean:
-            clean = re.sub(rf"{TAG_BEGIN}.*$", "", clean, flags=re.DOTALL)
-        if TAG_END in clean:
-            clean = clean.replace(TAG_END, "")
-        clean = clean.rstrip()
+        clean = _strip_hosts_block(hosts_path.read_text(encoding="utf-8"))
         seen = set()
         clean_entries = []
         for ip, d in entries:
@@ -189,12 +193,7 @@ def clear_entries(hosts_path: Path = DEFAULT_HOSTS_PATH) -> tuple[bool, str]:
         raw = hosts_path.read_text(encoding="utf-8")
         if TAG_BEGIN not in raw and TAG_END not in raw:
             return True, "Блок обхода отсутствует в /etc/hosts"
-        clean = re.sub(rf"{TAG_BEGIN}.*?{TAG_END}\n?", "", raw, flags=re.DOTALL)
-        if TAG_BEGIN in clean:
-            clean = re.sub(rf"{TAG_BEGIN}.*$", "", clean, flags=re.DOTALL)
-        if TAG_END in clean:
-            clean = clean.replace(TAG_END, "")
-        clean = clean.rstrip()
+        clean = _strip_hosts_block(raw)
         _write_hosts(hosts_path, (clean + "\n") if clean else "")
         flush_dns_cache()
         return True, "Блок обхода успешно удалён из /etc/hosts"
@@ -411,15 +410,18 @@ def find_binaries(configured: str | None = "auto") -> list[Path]:
     seen: set[Path] = set()
 
     # 1. CLI binaries (agy)
-    cli_cands = [
-        home / ".local/bin/agy", home / ".local/share/agy/bin/agy",
-        home / ".antigravity/bin/agy",
-        Path.home() / ".local/bin/agy", Path.home() / ".local/share/agy/bin/agy",
-        Path.home() / ".antigravity/bin/agy",
+    cli_cands = []
+    for base_home in dict.fromkeys([home, Path.home()]):
+        cli_cands.extend([
+            base_home / ".local/bin/agy",
+            base_home / ".local/share/agy/bin/agy",
+            base_home / ".antigravity/bin/agy",
+        ])
+    cli_cands.extend([
         home / "Library/Application Support/antigravity/bin/agy",
         Path("/opt/homebrew/bin/agy"),
         Path("/usr/local/bin/agy"), Path("/usr/bin/agy"), Path("/opt/antigravity/bin/agy"), Path("/opt/agy/agy"),
-    ]
+    ])
     if w := shutil.which("agy"):
         cli_cands.append(Path(w))
     for c in cli_cands:
@@ -471,8 +473,18 @@ def get_binary_status(bin_path: Path) -> str:
     if not real_bin.is_file():
         return "FILE_NOT_FOUND"
     try:
-        d = real_bin.read_bytes()
-        return "ALREADY_PATCHED" if SIG_PATCHED in d else ("READY_TO_PATCH" if SIG_ORIGINAL in d else "SIGNATURE_NOT_FOUND")
+        if real_bin.stat().st_size == 0:
+            return "SIGNATURE_NOT_FOUND"
+        with real_bin.open("rb") as f:
+            try:
+                with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                    has_patched = mm.find(SIG_PATCHED) != -1
+                    if has_patched:
+                        return "ALREADY_PATCHED"
+                    return "READY_TO_PATCH" if mm.find(SIG_ORIGINAL) != -1 else "SIGNATURE_NOT_FOUND"
+            except (ValueError, OSError):
+                d = f.read()
+                return "ALREADY_PATCHED" if SIG_PATCHED in d else ("READY_TO_PATCH" if SIG_ORIGINAL in d else "SIGNATURE_NOT_FOUND")
     except Exception as e:
         return f"ERROR: {e}"
 
@@ -529,6 +541,22 @@ def _format_patch_write_error(real_bin: Path, err: Exception) -> str:
     return f"Ошибка записи: {err}"
 
 
+def _atomic_write_binary(real_bin: Path, content: bytes, st: os.stat_result) -> tuple[bool | None, str]:
+    tmp = real_bin.with_name(f"{real_bin.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_bytes(content)
+        _apply_perms(tmp, st)
+        os.replace(tmp, real_bin)
+    except Exception:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except Exception:
+                pass
+        raise
+    return _resign_macos_macho(real_bin)
+
+
 def apply_patch(bin_path: Path) -> tuple[bool, str]:
     real_bin = bin_path.resolve()
     if not real_bin.is_file():
@@ -542,24 +570,14 @@ def apply_patch(bin_path: Path) -> tuple[bool, str]:
     if SIG_ORIGINAL not in d:
         return False, "Сигнатура 'ineligible' не найдена в бинарнике"
 
-    st = real_bin.stat()
-    tmp = real_bin.with_name(f"{real_bin.name}.{os.getpid()}.tmp")
     try:
-        tmp.write_bytes(d.replace(SIG_ORIGINAL, SIG_PATCHED))
-        _apply_perms(tmp, st)
-        os.replace(tmp, real_bin)
-        resigned, cs_err = _resign_macos_macho(real_bin)
+        resigned, cs_err = _atomic_write_binary(real_bin, d.replace(SIG_ORIGINAL, SIG_PATCHED), real_bin.stat())
         if resigned is True:
             return True, "Бинарник успешно пропатчен и переподписан"
         if resigned is False:
             return True, f"Бинарник пропатчен, но не удалось переподписать через codesign ({cs_err})"
         return True, "Бинарник успешно пропатчен"
     except Exception as e:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except Exception:
-                pass
         return False, _format_patch_write_error(real_bin, e)
 
 
@@ -567,23 +585,14 @@ def restore_backup(bin_path: Path) -> tuple[bool, str]:
     real_bin = bin_path.resolve()
     bak = real_bin.with_name(real_bin.name + ".bak")
     if bak.is_file():
-        st = bak.stat()
-        tmp = real_bin.with_name(f"{real_bin.name}.{os.getpid()}.tmp")
         try:
-            shutil.copy2(bak, tmp)
-            _apply_perms(tmp, st)
-            os.replace(tmp, real_bin)
+            _atomic_write_binary(real_bin, bak.read_bytes(), bak.stat())
             try:
                 bak.unlink()
             except Exception:
                 pass
             return True, f"Оригинальный бинарник восстановлен из {bak.name}"
         except Exception as e:
-            if tmp.exists():
-                try:
-                    tmp.unlink()
-                except Exception:
-                    pass
             return False, f"Ошибка восстановления бэкапа: {e}"
 
     if not real_bin.is_file():
@@ -595,22 +604,12 @@ def restore_backup(bin_path: Path) -> tuple[bool, str]:
     if SIG_PATCHED not in d:
         return False, "Патч не обнаружен в бинарнике"
 
-    st = real_bin.stat()
-    tmp = real_bin.with_name(f"{real_bin.name}.{os.getpid()}.tmp")
     try:
-        tmp.write_bytes(d.replace(SIG_PATCHED, SIG_ORIGINAL))
-        _apply_perms(tmp, st)
-        os.replace(tmp, real_bin)
-        resigned, cs_err = _resign_macos_macho(real_bin)
+        resigned, cs_err = _atomic_write_binary(real_bin, d.replace(SIG_PATCHED, SIG_ORIGINAL), real_bin.stat())
         if resigned is False:
             return True, f"Патч откачен, но не удалось переподписать через codesign ({cs_err})"
         return True, "Патч успешно откачен"
     except Exception as e:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except Exception:
-                pass
         return False, _format_patch_write_error(real_bin, e)
 
 

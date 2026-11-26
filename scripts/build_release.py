@@ -9,7 +9,6 @@ Also generates SHA256SUMS.txt for integrity verification.
 
 import argparse
 import hashlib
-import os
 import sys
 import tarfile
 import zipfile
