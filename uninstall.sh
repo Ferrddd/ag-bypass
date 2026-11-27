@@ -13,9 +13,8 @@ if [ "$EUID" -eq 0 ]; then
     "${SCRIPT_DIR}/ag" unpatch 2>/dev/null || true
 
     if command -v systemctl &>/dev/null; then
-        if systemctl is-active --quiet ag-check.timer 2>/dev/null; then
-            systemctl disable --now ag-check.timer 2>/dev/null || true
-        fi
+        systemctl disable --now ag-check.timer 2>/dev/null || true
+        systemctl stop ag-check.service 2>/dev/null || true
         rm -f /etc/systemd/system/ag-check.service
         rm -f /etc/systemd/system/ag-check.timer
         systemctl daemon-reload 2>/dev/null || true

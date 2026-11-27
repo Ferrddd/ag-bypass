@@ -618,3 +618,66 @@ def is_timer_active() -> bool:
         return res.stdout.strip() == "active"
     except Exception:
         return False
+
+
+def start_timer() -> tuple[bool, str]:
+    """Enable and start systemd failover timer if installed."""
+    if not shutil.which("systemctl"):
+        return True, "Фоновый таймер systemd не используется."
+    try:
+        listed = subprocess.run(
+            ["systemctl", "list-unit-files", "ag-check.timer"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if "ag-check.timer" not in (listed.stdout or ""):
+            return True, "Таймер ag-check.timer не установлен (пропущено)."
+        if is_timer_active():
+            return True, "Таймер ag-check.timer уже активен."
+        res = subprocess.run(
+            ["systemctl", "enable", "--now", "ag-check.timer"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if res.returncode == 0:
+            return True, "Таймер ag-check.timer включён и запущен."
+        detail = (res.stderr or res.stdout or "").strip() or f"код {res.returncode}"
+        return False, f"Не удалось запустить таймер ag-check.timer: {detail}"
+    except Exception as e:
+        return False, f"Ошибка запуска таймера ag-check.timer: {e}"
+
+
+def stop_timer(remove: bool = False) -> tuple[bool, str]:
+    """Stop and disable systemd failover timer and service if present."""
+    if not shutil.which("systemctl"):
+        return True, "Фоновый таймер systemd не используется."
+    try:
+        listed = subprocess.run(
+            ["systemctl", "list-unit-files", "ag-check.timer"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        has_unit = "ag-check.timer" in (listed.stdout or "")
+        if not has_unit and not is_timer_active():
+            return True, "Таймер ag-check.timer не найден."
+
+        subprocess.run(
+            ["systemctl", "disable", "--now", "ag-check.timer"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        subprocess.run(
+            ["systemctl", "stop", "ag-check.service"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if is_timer_active():
+            return False, "Не удалось остановить таймер ag-check.timer."
+        return True, "Таймер ag-check.timer остановлен и отключён."
+    except Exception as e:
+        return False, f"Ошибка остановки таймера ag-check.timer: {e}"

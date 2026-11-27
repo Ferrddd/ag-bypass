@@ -1,4 +1,5 @@
 """Antigravity System Module for Windows"""
+import csv
 import mmap
 import os
 import re
@@ -39,13 +40,38 @@ def is_admin() -> bool:
         return False
 
 
+def _run_hidden(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
+    """Run a subprocess without flashing a console window on Windows."""
+    if flags := getattr(subprocess, "CREATE_NO_WINDOW", 0):
+        kwargs.setdefault("creationflags", flags)
+    return subprocess.run(cmd, **kwargs)
+
+
+def _resolve_pythonw(executable: str | None = None) -> str:
+    """Resolve pythonw.exe next to executable (or on PATH) to avoid console popups."""
+    py_exe = executable or sys.executable or "python"
+    p = Path(py_exe)
+    lower_name = p.name.lower()
+    if lower_name.startswith("pythonw"):
+        return py_exe
+    candidates = [p.with_name("pythonw.exe")]
+    if lower_name.startswith("python"):
+        candidates.append(p.with_name("pythonw" + p.name[6:]))
+    for cand in candidates:
+        if cand.is_file():
+            return str(cand)
+    if which_pw := shutil.which("pythonw"):
+        return which_pw
+    return py_exe
+
+
 # =====================================================================
 # Windows Hosts & DNS Cache
 # =====================================================================
 
 def flush_dns_cache() -> bool:
     try:
-        return subprocess.run(
+        return _run_hidden(
             ["ipconfig", "/flushdns"],
             capture_output=True,
             timeout=5,
@@ -172,7 +198,7 @@ def apply_endpoint(url: str) -> list[str]:
 
     if not reg_success:
         try:
-            res = subprocess.run(["setx", "CLOUD_CODE_URL", safe_url], capture_output=True, timeout=5)
+            res = _run_hidden(["setx", "CLOUD_CODE_URL", safe_url], capture_output=True, timeout=5)
             if res.returncode == 0:
                 applied.append(r"HKCU\Environment:CLOUD_CODE_URL (setx)")
         except Exception:
@@ -203,7 +229,7 @@ def remove_endpoint() -> list[str]:
 
     if not reg_deleted:
         try:
-            res = subprocess.run(
+            res = _run_hidden(
                 ["reg", "delete", r"HKCU\Environment", "/v", "CLOUD_CODE_URL", "/f"],
                 capture_output=True,
                 timeout=5,
@@ -228,7 +254,7 @@ def get_endpoint_status() -> tuple[bool, str]:
         except Exception:
             pass
     try:
-        res = subprocess.run(
+        res = _run_hidden(
             ["reg", "query", r"HKCU\Environment", "/v", "CLOUD_CODE_URL"],
             capture_output=True,
             text=True,
@@ -511,15 +537,180 @@ def restore_backup(bin_path: Path) -> tuple[bool, str]:
 # Background Timer (Task Scheduler)
 # =====================================================================
 
-def is_timer_active() -> bool:
+_TASK_NAME = "AntigravityBypassCheck"
+
+
+def _task_state(task_name: str = _TASK_NAME) -> tuple[bool, bool]:
+    """Return (exists, enabled) for a scheduled task via locale-independent XML output."""
     try:
-        return subprocess.run(
-            ["schtasks", "/query", "/tn", "AntigravityBypassCheck"],
+        res = _run_hidden(
+            ["schtasks", "/query", "/tn", task_name, "/xml"],
             capture_output=True,
+            text=True,
             timeout=5,
-        ).returncode == 0
+        )
+        if res.returncode != 0:
+            return False, False
+        xml_text = res.stdout if isinstance(res.stdout, str) else ""
+        enabled = "<enabled>false</enabled>" not in xml_text.lower()
+        return True, enabled
     except Exception:
-        return False
+        return False, False
+
+
+def _task_exists(task_name: str = _TASK_NAME) -> bool:
+    exists, _ = _task_state(task_name)
+    return exists
+
+
+def is_timer_active() -> bool:
+    _, enabled = _task_state(_TASK_NAME)
+    return enabled
+
+
+def _find_matching_task_names(task_name: str = _TASK_NAME) -> list[str]:
+    """Return task_name plus any subfolder tasks ending with \\task_name."""
+    targets = [task_name]
+    base_lower = task_name.lstrip("\\").lower()
+    seen = {base_lower}
+    try:
+        res = _run_hidden(
+            ["schtasks", "/query", "/fo", "CSV", "/nh"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if res.returncode == 0 and isinstance(res.stdout, str):
+            for row in csv.reader(res.stdout.splitlines()):
+                if not row:
+                    continue
+                tn = row[0].strip()
+                norm = tn.lstrip("\\").lower()
+                if norm not in seen and (norm == base_lower or norm.endswith(f"\\{base_lower}")):
+                    targets.append(tn)
+                    seen.add(norm)
+    except Exception:
+        pass
+    return targets
+
+
+def _kill_background_check_processes() -> None:
+    """Terminate any lingering python/pythonw processes running 'ag check'."""
+    ps_script = (
+        f"$me = {os.getpid()}; "
+        "Get-CimInstance Win32_Process -Filter \"Name LIKE 'python%.exe'\" "
+        "-ErrorAction SilentlyContinue | "
+        "Where-Object { $_.ProcessId -ne $me -and $_.CommandLine -match "
+        "'(?i)([\\\\/]|^|[\"\\s])ag[\"'']?\\s+check(\\s|$)' } | "
+        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+    )
+    try:
+        _run_hidden(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+    except Exception:
+        pass
+
+
+def _ps_task_cmd(tn: str, action: str) -> str:
+    trimmed = tn.lstrip("\\")
+    short_name = trimmed.rsplit("\\", 1)[-1].replace("'", "''")
+    if "\\" in trimmed:
+        task_path = ("\\" + trimmed.rsplit("\\", 1)[0] + "\\").replace("'", "''")
+        path_arg = f"-TaskPath '{task_path}' "
+    else:
+        path_arg = ""
+    confirm = " -Confirm:$false" if action == "Unregister-ScheduledTask" else ""
+    return f"{action} {path_arg}-TaskName '{short_name}'{confirm}"
+
+
+def start_timer(task_name: str = _TASK_NAME) -> tuple[bool, str]:
+    """Enable an already-installed scheduled task without recreating it."""
+    exists, enabled = _task_state(task_name)
+    if not exists:
+        return True, f"Задача '{task_name}' не установлена (пропущено)."
+    if enabled:
+        return True, f"Задача '{task_name}' уже активна."
+    try:
+        res = _run_hidden(
+            ["schtasks", "/change", "/tn", task_name, "/enable"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if res.returncode == 0:
+            return True, f"Задача '{task_name}' включена в Планировщике задач."
+        _run_hidden(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", _ps_task_cmd(task_name, "Enable-ScheduledTask")],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        _, enabled_now = _task_state(task_name)
+        if enabled_now:
+            return True, f"Задача '{task_name}' включена в Планировщике задач."
+        detail = (res.stderr or res.stdout or "").strip() or f"код {res.returncode}"
+        return False, f"Не удалось включить задачу '{task_name}': {detail}"
+    except Exception as e:
+        return False, f"Ошибка включения задачи '{task_name}': {e}"
+
+
+def stop_timer(task_name: str = _TASK_NAME, remove: bool = False) -> tuple[bool, str]:
+    """Stop lingering background checks and disable (or remove on uninstall) scheduled tasks."""
+    targets = _find_matching_task_names(task_name)
+    changed_any = False
+    errors: list[str] = []
+
+    for tn in targets:
+        try:
+            _run_hidden(
+                ["schtasks", "/end", "/tn", tn],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if remove:
+                cmd = ["schtasks", "/delete", "/tn", tn, "/f"]
+                ps_action = "Unregister-ScheduledTask"
+            else:
+                cmd = ["schtasks", "/change", "/tn", tn, "/disable"]
+                ps_action = "Disable-ScheduledTask"
+
+            res = _run_hidden(cmd, capture_output=True, text=True, timeout=15)
+            if res.returncode == 0:
+                changed_any = True
+                continue
+
+            exists, enabled = _task_state(tn)
+            needs_fallback = exists if remove else enabled
+            if needs_fallback:
+                _run_hidden(
+                    ["powershell", "-NoProfile", "-NonInteractive", "-Command", _ps_task_cmd(tn, ps_action)],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                exists_after, enabled_after = _task_state(tn)
+                still_bad = exists_after if remove else enabled_after
+                if still_bad:
+                    detail = (res.stderr or res.stdout or "").strip() or f"код {res.returncode}"
+                    errors.append(f"{tn}: {detail}")
+                else:
+                    changed_any = True
+        except Exception as e:
+            errors.append(f"{tn}: {e}")
+
+    _kill_background_check_processes()
+
+    verb = "удалена" if remove else "отключена"
+    if errors:
+        return False, f"Не удалось {'удалить' if remove else 'отключить'} задачу '{task_name}': {'; '.join(errors)}"
+    if changed_any:
+        return True, f"Задача '{task_name}' остановлена и {verb} в Планировщике задач."
+    return True, f"Задача '{task_name}' не найдена в Планировщике."
 
 
 # =====================================================================
@@ -587,13 +778,21 @@ def install_windows(app_dir: Path, interval_minutes: int = 2) -> tuple[bool, lis
     """Configure Windows Task Scheduler failover job and User Path."""
     msgs: list[str] = []
     ag_path = (app_dir / "ag").resolve()
-    py_exe = sys.executable or "python"
+    py_exe = _resolve_pythonw()
     interval = max(1, int(interval_minutes or 2))
     task_cmd = f'"{py_exe}" "{ag_path}" check --quiet'
 
     try:
-        res = subprocess.run(
-            ["schtasks", "/create", "/tn", "AntigravityBypassCheck", "/tr", task_cmd, "/sc", "minute", "/mo", str(interval), "/f"],
+        res = _run_hidden(
+            [
+                "schtasks", "/create",
+                "/tn", _TASK_NAME,
+                "/tr", task_cmd,
+                "/sc", "minute",
+                "/mo", str(interval),
+                "/rl", "HIGHEST",
+                "/f",
+            ],
             capture_output=True,
             text=True,
             timeout=15,
@@ -623,19 +822,9 @@ def uninstall_windows(app_dir: Path, configured_binary_path: str = "auto") -> tu
             ok_unp, unp_msg = restore_backup(bp)
             msgs.append(f"[{'✓' if ok_unp else 'WARN'}] {bp}: {unp_msg}")
 
-    try:
-        res = subprocess.run(
-            ["schtasks", "/delete", "/tn", "AntigravityBypassCheck", "/f"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        if res.returncode == 0:
-            msgs.append("[✓] Задача 'AntigravityBypassCheck' удалена из Планировщика задач.")
-        else:
-            msgs.append("[i] Задача 'AntigravityBypassCheck' не найдена в Планировщике.")
-    except Exception as e:
-        msgs.append(f"[WARN] Ошибка удаления задачи schtasks: {e}")
+    ok_timer, timer_msg = stop_timer(remove=True)
+    tag = "✓" if (ok_timer and "удалена" in timer_msg) else ("i" if ok_timer else "ERR")
+    msgs.append(f"[{tag}] {timer_msg}")
 
     rm_ep = remove_endpoint()
     if rm_ep:
@@ -643,4 +832,4 @@ def uninstall_windows(app_dir: Path, configured_binary_path: str = "auto") -> tu
 
     ok_path, path_msg = update_user_path(app_dir, remove=True)
     msgs.append(f"[{'✓' if ok_path else 'WARN'}] {path_msg}.")
-    return ok_hosts, msgs
+    return ok_hosts and ok_timer, msgs

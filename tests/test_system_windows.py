@@ -771,12 +771,20 @@ class TestWindowsTaskScheduler(unittest.TestCase):
     @patch("subprocess.run")
     def test_is_timer_active_true(self, mock_run):
         mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = "<Task><Settings><Enabled>true</Enabled></Settings></Task>"
         self.assertTrue(system_windows.is_timer_active())
         mock_run.assert_called_once_with(
-            ["schtasks", "/query", "/tn", "AntigravityBypassCheck"],
+            ["schtasks", "/query", "/tn", "AntigravityBypassCheck", "/xml"],
             capture_output=True,
+            text=True,
             timeout=5,
         )
+
+    @patch("subprocess.run")
+    def test_is_timer_active_disabled_xml(self, mock_run):
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = "<Task><Settings><Enabled>false</Enabled></Settings></Task>"
+        self.assertFalse(system_windows.is_timer_active())
 
     @patch("subprocess.run")
     def test_is_timer_active_false(self, mock_run):
@@ -821,6 +829,169 @@ class TestWindowsTaskScheduler(unittest.TestCase):
                     )
                     self.assertNotIn(os.path.normpath(str(app_dir)), val_after)
 
+    def test_resolve_pythonw_and_hidden_subprocess_flags(self):
+        with tempfile.TemporaryDirectory() as td:
+            py_dir = Path(td).resolve()
+            py_exe = py_dir / "python.exe"
+            pyw_exe = py_dir / "pythonw.exe"
+            py_exe.write_bytes(b"")
+            pyw_exe.write_bytes(b"")
+
+            self.assertEqual(system_windows._resolve_pythonw(str(py_exe)), str(pyw_exe))
+            self.assertEqual(system_windows._resolve_pythonw(str(pyw_exe)), str(pyw_exe))
+
+            app_dir = py_dir / "app"
+            app_dir.mkdir()
+            (app_dir / "ag").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+
+            fake_reg = FakeWinreg()
+            with patch.object(sys, "executable", str(py_exe)), \
+                 patch("core.system_windows.winreg", fake_reg), \
+                 patch("subprocess.CREATE_NO_WINDOW", 0x08000000, create=True), \
+                 patch("subprocess.run") as mock_run:
+                mock_run.return_value.returncode = 0
+                ok, _ = system_windows.install_windows(app_dir, interval_minutes=2)
+                self.assertTrue(ok)
+                cmd_args = mock_run.call_args.args[0]
+                tr_val = cmd_args[cmd_args.index("/tr") + 1]
+                self.assertTrue(tr_val.startswith(f'"{pyw_exe}"'))
+                self.assertIn(" check --quiet", tr_val)
+                self.assertEqual(cmd_args[cmd_args.index("/rl") + 1], "HIGHEST")
+                self.assertEqual(mock_run.call_args.kwargs.get("creationflags"), 0x08000000)
+
+                mock_run.reset_mock()
+                self.assertTrue(system_windows.flush_dns_cache())
+                self.assertEqual(mock_run.call_args.kwargs.get("creationflags"), 0x08000000)
+
+    def test_stop_timer_disable_and_remove_and_start_timer(self):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            res = unittest.mock.MagicMock()
+            if cmd[:4] == ["schtasks", "/query", "/fo", "CSV"]:
+                res.returncode = 0
+                res.stdout = '"\\AntigravityBypassCheck","N/A","Ready"\n"\\Legacy\\AntigravityBypassCheck","N/A","Running"\n'
+                return res
+            if cmd[:3] == ["schtasks", "/query", "/tn"]:
+                res.returncode = 0
+                res.stdout = "<Task><Settings><Enabled>false</Enabled></Settings></Task>"
+                return res
+            res.returncode = 0
+            res.stdout = ""
+            res.stderr = ""
+            return res
+
+        with patch("subprocess.run", side_effect=fake_run):
+            ok_off, msg_off = system_windows.stop_timer()
+        self.assertTrue(ok_off)
+        self.assertIn("отключена", msg_off)
+        self.assertEqual(
+            [c[c.index("/tn") + 1] for c in calls if c[:2] == ["schtasks", "/change"] and "/disable" in c],
+            ["AntigravityBypassCheck", "\\Legacy\\AntigravityBypassCheck"],
+        )
+        self.assertTrue(any(c[0] == "powershell" and "Win32_Process" in c[-1] for c in calls))
+
+        calls.clear()
+        with patch("subprocess.run", side_effect=fake_run):
+            ok_on, msg_on = system_windows.start_timer()
+        self.assertTrue(ok_on)
+        self.assertIn("включена", msg_on)
+        self.assertTrue(any(c[:2] == ["schtasks", "/change"] and "/enable" in c for c in calls))
+
+        calls.clear()
+        with patch("subprocess.run", side_effect=fake_run):
+            ok_rm, msg_rm = system_windows.stop_timer(remove=True)
+        self.assertTrue(ok_rm)
+        self.assertIn("удалена", msg_rm)
+        end_targets = [c[c.index("/tn") + 1] for c in calls if c[:2] == ["schtasks", "/end"]]
+        del_targets = [c[c.index("/tn") + 1] for c in calls if c[:2] == ["schtasks", "/delete"]]
+        self.assertEqual(end_targets, ["AntigravityBypassCheck", "\\Legacy\\AntigravityBypassCheck"])
+        self.assertEqual(del_targets, ["AntigravityBypassCheck", "\\Legacy\\AntigravityBypassCheck"])
+
+    def test_start_timer_skips_when_not_installed(self):
+        with patch("subprocess.run", return_value=unittest.mock.MagicMock(returncode=1, stdout="")):
+            ok, msg = system_windows.start_timer()
+        self.assertTrue(ok)
+        self.assertIn("не установлена", msg)
+
+    def test_stop_timer_and_uninstall_report_failure_if_task_persists(self):
+        fake_reg = FakeWinreg()
+
+        def fake_run(cmd, **kwargs):
+            res = unittest.mock.MagicMock()
+            if cmd[:4] == ["schtasks", "/query", "/fo", "CSV"]:
+                res.returncode = 0
+                res.stdout = '"\\AntigravityBypassCheck","N/A","Ready"\n'
+                return res
+            if cmd[:3] == ["schtasks", "/query", "/tn"]:
+                res.returncode = 0
+                return res
+            if cmd[:2] == ["schtasks", "/delete"]:
+                res.returncode = 1
+                res.stderr = "ERROR: Access is denied."
+                res.stdout = ""
+                return res
+            res.returncode = 1
+            res.stdout = ""
+            res.stderr = ""
+            return res
+
+        with tempfile.TemporaryDirectory() as td, \
+             patch("core.system_windows.winreg", fake_reg), \
+             patch("core.system_windows.clear_entries", return_value=(True, "ok")), \
+             patch("core.system_windows.find_binaries", return_value=[]), \
+             patch("subprocess.run", side_effect=fake_run):
+            ok_u, msgs_u = system_windows.uninstall_windows(Path(td))
+
+        self.assertFalse(ok_u)
+        self.assertTrue(any("Access is denied" in m for m in msgs_u))
+
+    def test_linux_start_and_stop_timer_and_cmd_off(self):
+        with patch("core.system_linux.shutil.which", return_value="/usr/bin/systemctl"), \
+             patch("core.system_linux.subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                unittest.mock.MagicMock(returncode=0, stdout="ag-check.timer disabled\n"),
+                unittest.mock.MagicMock(returncode=3, stdout="inactive\n"),
+                unittest.mock.MagicMock(returncode=0, stdout=""),
+            ]
+            ok_start, msg_start = system_linux.start_timer()
+            self.assertTrue(ok_start)
+            self.assertIn("включён", msg_start)
+
+        with patch("core.system_linux.shutil.which", return_value="/usr/bin/systemctl"), \
+             patch("core.system_linux.subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                unittest.mock.MagicMock(returncode=0, stdout="ag-check.timer enabled\n"),
+                unittest.mock.MagicMock(returncode=0, stdout=""),
+                unittest.mock.MagicMock(returncode=0, stdout=""),
+                unittest.mock.MagicMock(returncode=3, stdout="inactive\n"),
+            ]
+            ok, msg = system_linux.stop_timer()
+            self.assertTrue(ok)
+            self.assertIn("остановлен", msg)
+
+        out = io.StringIO()
+        args = unittest.mock.MagicMock()
+        cfg = unittest.mock.MagicMock()
+        with patch("sys.stdout", out), \
+             patch("core.system.is_admin", return_value=True), \
+             patch("core.system.clear_entries", return_value=(True, "cleared")), \
+             patch("core.system.stop_timer", return_value=(True, "Задача 'AntigravityBypassCheck' остановлена и удалена из Планировщика задач.")) as mock_stop, \
+             patch("core.system.remove_endpoint", return_value=[]):
+            ag_cli.cmd_off(args, cfg)
+        mock_stop.assert_called_once()
+        self.assertIn("остановлена и удалена", out.getvalue())
+
+        with patch("sys.stdout", io.StringIO()), \
+             patch("core.system.is_admin", return_value=True), \
+             patch("core.system.clear_entries", return_value=(True, "cleared")), \
+             patch("core.system.stop_timer", return_value=(False, "Access denied")), \
+             patch("core.system.remove_endpoint", return_value=[]):
+            with self.assertRaises(SystemExit) as ctx:
+                ag_cli.cmd_off(args, cfg)
+            self.assertEqual(ctx.exception.code, 1)
+
 
 # =====================================================================
 # Platform Dispatcher Tests (core.system)
@@ -849,6 +1020,8 @@ class TestSystemDispatcher(unittest.TestCase):
             self.assertEqual(system.apply_patch, system_windows.apply_patch)
             self.assertEqual(system.restore_backup, system_windows.restore_backup)
             self.assertEqual(system.is_timer_active, system_windows.is_timer_active)
+            self.assertEqual(system.start_timer, system_windows.start_timer)
+            self.assertEqual(system.stop_timer, system_windows.stop_timer)
 
     def test_dispatcher_linux(self):
         with patch.object(sys, "platform", "linux"):
@@ -865,6 +1038,8 @@ class TestSystemDispatcher(unittest.TestCase):
             self.assertEqual(system.apply_patch, system_linux.apply_patch)
             self.assertEqual(system.restore_backup, system_linux.restore_backup)
             self.assertEqual(system.is_timer_active, system_linux.is_timer_active)
+            self.assertEqual(system.start_timer, system_linux.start_timer)
+            self.assertEqual(system.stop_timer, system_linux.stop_timer)
 
     def test_dispatcher_exports_all_contracts(self):
         expected_contracts = [
@@ -885,6 +1060,8 @@ class TestSystemDispatcher(unittest.TestCase):
             "apply_patch",
             "restore_backup",
             "is_timer_active",
+            "start_timer",
+            "stop_timer",
         ]
         for contract in expected_contracts:
             self.assertIn(contract, system.__all__, f"Missing contract symbol in __all__: {contract}")

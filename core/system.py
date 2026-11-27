@@ -20,6 +20,8 @@ if sys.platform == "win32":
         apply_patch,
         restore_backup,
         is_timer_active,
+        start_timer,
+        stop_timer,
         user_home,
     )
     _SYS_ENV = None
@@ -43,6 +45,8 @@ else:
         apply_patch,
         restore_backup,
         is_timer_active,
+        start_timer,
+        stop_timer,
         user_home,
         _SYS_ENV,
         _SYS_PROF,
@@ -66,4 +70,6 @@ __all__ = [
     "apply_patch",
     "restore_backup",
     "is_timer_active",
+    "start_timer",
+    "stop_timer",
 ]

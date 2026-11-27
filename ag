@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 import argparse
+import os
 import sys
 from pathlib import Path
 
 if sys.platform == "win32":
+    # Under pythonw.exe stdout/stderr are None; route to devnull so error/argparse writes never fail.
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8", errors="replace")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8", errors="replace")
     for _stream in (sys.stdout, sys.stderr):
         if hasattr(_stream, "reconfigure"):
             try:
@@ -123,6 +129,11 @@ def cmd_on(args, cfg: Config):
         sys.exit(1)
     nodes_label = f"[{', '.join(chosen_ips)}]" if len(chosen_ips) > 1 else chosen_ips[0]
     print(f"      {C_GREEN}[✓] {nodes_label} -> {', '.join(cfg.domains)} прописан в {system.DEFAULT_HOSTS_PATH}{C_RESET}")
+    ok_timer, timer_msg = system.start_timer()
+    if not ok_timer:
+        print(f"      {C_YELLOW}[WARN] Мониторинг: {timer_msg}{C_RESET}")
+    elif "включ" in timer_msg:
+        print(f"      {C_GREEN}[✓] {timer_msg}{C_RESET}")
     print(f"\n{C_GREEN}{C_BOLD}[✓] Обход активирован! Antigravity готов к работе.{C_RESET}")
 
 
@@ -130,9 +141,15 @@ def cmd_off(args, cfg: Config):
     _req_admin("off")
     ok, msg = system.clear_entries()
     print(f"{C_GREEN}[✓] {msg}{C_RESET}" if ok else f"{C_RED}[ERR] {msg}{C_RESET}")
+    ok_timer, timer_msg = system.stop_timer()
+    if ok_timer:
+        is_stopped = any(w in timer_msg for w in ("удалена", "отключена", "остановлен"))
+        print(f"{C_GREEN}[✓]{C_RESET} {timer_msg}" if is_stopped else f"    {timer_msg}")
+    else:
+        print(f"{C_RED}[ERR] {timer_msg}{C_RESET}")
     rm = system.remove_endpoint()
     print(f"{C_GREEN}[✓] Удалены файлы окружения ({len(rm)}){C_RESET}" if rm else "    Файлы окружения не найдены.")
-    if not ok:
+    if not ok or not ok_timer:
         sys.exit(1)
 
 
