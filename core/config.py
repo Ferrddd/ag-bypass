@@ -55,6 +55,16 @@ def _parse_float(val, default: float, allow_zero: bool = False) -> float:
     return default
 
 
+def _parse_str_list(val) -> list[str]:
+    if isinstance(val, list):
+        items = [str(x).strip() for x in val if str(x).strip()]
+    elif isinstance(val, str) and val.strip():
+        items = [val.strip()]
+    else:
+        items = []
+    return list(dict.fromkeys(items))
+
+
 class Config:
     def __init__(self, config_path: str | Path | None = None):
         self.path = find_config(config_path)
@@ -83,14 +93,10 @@ class Config:
         elif isinstance(dns, str):
             servers.append(dns)
         self.smart_dns_servers = list(dict.fromkeys(str(s).strip() for s in servers if str(s).strip()))
-        doh = cfg.get("doh_servers") or dns_dict.get("doh_servers")
-        if isinstance(doh, list):
-            self.doh_servers = [str(x).strip() for x in doh if str(x).strip()]
-        elif isinstance(doh, str) and doh.strip():
-            self.doh_servers = [doh.strip()]
-        else:
-            self.doh_servers = []
+        self.doh_servers = _parse_str_list(cfg.get("doh_servers") or dns_dict.get("doh_servers"))
+        self.dot_servers = _parse_str_list(cfg.get("dot_servers") or dns_dict.get("dot_servers"))
         self.smart_dns_port = _parse_int(dns_dict.get("port"), 53, 1, 65535)
+        self.smart_dns_dot_port = _parse_int(dns_dict.get("dot_port"), 853, 1, 65535)
         self.smart_dns_timeout = _parse_float(dns_dict.get("timeout_seconds"), 3.0)
 
         # Статические узлы
@@ -126,8 +132,8 @@ class Config:
         errs = []
         if not self.exists:
             errs.append(f"Файл конфигурации не найден: {self.path}")
-        if not self.smart_dns_servers and not self.nodes:
-            errs.append("Не настроены узлы или DNS: укажите 'smart_dns.servers' или 'nodes' в config.json")
+        if not self.smart_dns_servers and not self.dot_servers and not self.doh_servers and not self.nodes:
+            errs.append("Не настроены узлы или DNS: укажите 'smart_dns.servers', 'dot_servers', 'doh_servers' или 'nodes' в config.json")
         if not self.domains:
             errs.append("Список доменов (domains) пуст")
         return errs

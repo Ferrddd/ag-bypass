@@ -3,7 +3,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from core.config import Config, find_config
 from core import network, system
@@ -415,9 +415,10 @@ class TestNetwork(unittest.TestCase):
         self.assertIsNone(network.resolve_target("255.255.255.255"))
         self.assertIsNone(network.resolve_target("0.1.2.3"))
 
+    @patch("core.network.query_all_dot_servers")
     @patch("core.network.query_all_doh_servers")
     @patch("core.network.query_all_dns_servers")
-    def test_network_airgap_dns_failure(self, mock_query_all, mock_doh):
+    def test_network_airgap_dns_failure(self, mock_query_all, mock_doh, mock_dot):
         # Simulate airgapped environment where all DNS servers fail
         mock_query_all.return_value = [
             {"server": "1.1.1.1", "dns_ip": "1.1.1.1", "ips": [], "error": "DNS 1.1.1.1 не вернул A-записей"},
@@ -426,13 +427,16 @@ class TestNetwork(unittest.TestCase):
         mock_doh.return_value = [
             {"server": "https://1.1.1.1/dns-query", "ips": [], "error": "timeout", "doh": True}
         ]
+        mock_dot.return_value = [
+            {"server": "tls://1.1.1.1", "ips": [], "error": "timeout", "dot": True}
+        ]
         class DummyConfig:
             smart_dns_servers = ["1.1.1.1", "8.8.8.8"]
             nodes = ["192.168.1.100"]
 
         cands, res = network.get_candidate_ips(DummyConfig(), "example.com")
         self.assertEqual(cands, ["192.168.1.100"])
-        self.assertIn("все DNS/DoH не ответили", str(res))
+        self.assertIn("все DNS/DoT/DoH не ответили", str(res))
 
 
 class TestCorePackage(unittest.TestCase):
@@ -598,6 +602,159 @@ class TestCLI(unittest.TestCase):
         cfg = Config(cfg_file)
         self.assertEqual(cfg.max_hosts_ips, 3)
         self.assertEqual(cfg.doh_servers, ["https://custom.doh/query"])
+
+    def test_config_dot_servers_and_validation(self):
+        cfg_file = self.temp_path / "dot_cfg.json"
+        cfg_file.write_text(
+            json.dumps({
+                "dot_servers": ["tls://dns.geohide.ru", "1.1.1.1#cloudflare-dns.com"],
+                "smart_dns": {"dot_port": 8853},
+            }),
+            encoding="utf-8",
+        )
+        cfg = Config(cfg_file)
+        self.assertEqual(cfg.dot_servers, ["tls://dns.geohide.ru", "1.1.1.1#cloudflare-dns.com"])
+        self.assertEqual(cfg.smart_dns_dot_port, 8853)
+        self.assertEqual(cfg.validate(), [])
+
+    def test_parse_dot_target_variants(self):
+        self.assertEqual(network._parse_dot_target("tls://dns.google"), ("dns.google", 853, "dns.google"))
+        self.assertEqual(
+            network._parse_dot_target("tls://1.1.1.1:8853#cloudflare-dns.com"),
+            ("1.1.1.1", 8853, "cloudflare-dns.com"),
+        )
+        self.assertEqual(network._parse_dot_target("9.9.9.9"), ("9.9.9.9", 853, "9.9.9.9"))
+        self.assertIsNone(network._parse_dot_target("https://1.1.1.1/dns-query"))
+        self.assertIsNone(network._parse_dot_target("tls://bad:99999"))
+
+    @patch("urllib.request.urlopen")
+    def test_query_doh_server_rfc8484_wire_fallback(self, mock_urlopen):
+        import io, socket, struct, urllib.error
+
+        dns_wire = (
+            struct.pack("!HHHHHH", 0, 0x8180, 1, 1, 0, 0)
+            + b"\x07example\x03com\x00\x00\x01\x00\x01"
+            + b"\xc0\x0c" + struct.pack("!HHIH", 1, 1, 60, 4) + socket.inet_aton("203.0.113.55")
+        )
+        mock_resp = io.BytesIO(dns_wire)
+        mock_cm = MagicMock()
+        mock_cm.__enter__.return_value = mock_resp
+        mock_urlopen.side_effect = [
+            urllib.error.HTTPError("https://doh.example/dns-query", 415, "Unsupported Media Type", {}, None),
+            mock_cm,
+        ]
+
+        ips = network.query_doh_server("https://doh.example/dns-query", "example.com")
+        self.assertEqual(ips, ["203.0.113.55"])
+        self.assertEqual(mock_urlopen.call_count, 2)
+        second_req = mock_urlopen.call_args_list[1].args[0]
+        self.assertEqual(second_req.get_method(), "POST")
+        self.assertEqual(second_req.get_header("Content-type"), "application/dns-message")
+
+    def test_query_dot_server_tls_framing(self):
+        import socket, struct
+
+        sent_frames = []
+
+        class FakeTLSSock:
+            def __init__(self):
+                self._buf = b""
+                self._off = 0
+
+            def settimeout(self, t):
+                pass
+
+            def sendall(self, data):
+                sent_frames.append(data)
+                msg_len = struct.unpack("!H", data[:2])[0]
+                pkt = data[2 : 2 + msg_len]
+                qid = struct.unpack("!H", pkt[:2])[0]
+                resp = (
+                    struct.pack("!HHHHHH", qid, 0x8180, 1, 1, 0, 0)
+                    + b"\x07example\x03com\x00\x00\x01\x00\x01"
+                    + b"\xc0\x0c" + struct.pack("!HHIH", 1, 1, 60, 4) + socket.inet_aton("198.51.100.77")
+                )
+                self._buf = struct.pack("!H", len(resp)) + resp
+
+            def recv(self, n):
+                chunk = self._buf[self._off : self._off + min(n, 3)]
+                self._off += len(chunk)
+                return chunk
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+        fake_ctx = MagicMock()
+        fake_ctx.wrap_socket.return_value = FakeTLSSock()
+        fake_raw = MagicMock()
+        fake_raw.__enter__.return_value = fake_raw
+
+        with patch("ssl.create_default_context", return_value=fake_ctx), \
+             patch("socket.create_connection", return_value=fake_raw) as mock_conn:
+            ips = network.query_dot_server("tls://1.1.1.1:853#cloudflare-dns.com", "example.com")
+
+        self.assertEqual(ips, ["198.51.100.77"])
+        mock_conn.assert_called_once_with(("1.1.1.1", 853), timeout=3.0)
+        fake_ctx.wrap_socket.assert_called_once_with(fake_raw, server_hostname="cloudflare-dns.com")
+        self.assertEqual(len(sent_frames[0]) - 2, struct.unpack("!H", sent_frames[0][:2])[0])
+
+    @patch("core.network.query_all_dot_servers")
+    @patch("core.network.query_all_doh_servers")
+    @patch("core.network.query_all_dns_servers")
+    def test_get_candidate_ips_routes_udp_dot_doh_and_dot_fallback(self, mock_dns, mock_doh, mock_dot):
+        mock_dns.return_value = [{"server": "8.8.8.8", "dns_ip": "8.8.8.8", "ips": [], "error": "timeout"}]
+        mock_doh.return_value = [{"server": "https://dns.google/resolve", "dns_ip": "https://dns.google/resolve", "ips": ["1.2.3.4"], "error": None, "doh": True}]
+        mock_dot.return_value = [{"server": "tls://1.1.1.1", "dns_ip": "1.1.1.1", "ips": ["5.6.7.8"], "error": None, "dot": True}]
+
+        class MixedConfig:
+            smart_dns_servers = ["8.8.8.8", "tls://1.1.1.1", "https://dns.google/resolve"]
+            dot_servers = []
+            doh_servers = []
+            nodes = []
+
+        cands, res = network.get_candidate_ips(MixedConfig(), "example.com")
+        mock_dns.assert_called_once()
+        self.assertEqual(mock_dns.call_args.args[0], ["8.8.8.8"])
+        mock_dot.assert_called_once()
+        self.assertEqual(mock_dot.call_args.args[0], ["tls://1.1.1.1"])
+        mock_doh.assert_called_once()
+        self.assertEqual(mock_doh.call_args.args[0], ["https://dns.google/resolve"])
+        self.assertEqual(cands, ["5.6.7.8", "1.2.3.4"])
+
+        # Now verify DoT fallback when UDP and DoH fail
+        mock_dns.reset_mock()
+        mock_doh.reset_mock()
+        mock_dot.reset_mock()
+        mock_doh.return_value = [{"server": "https://1.1.1.1/dns-query", "dns_ip": "https://1.1.1.1/dns-query", "ips": [], "error": "fail", "doh": True}]
+        mock_dot.return_value = [{"server": "tls://1.1.1.1", "dns_ip": "1.1.1.1", "ips": ["9.9.9.9"], "error": None, "dot": True}]
+
+        class FallbackConfig:
+            smart_dns_servers = ["bad.dns.ru"]
+            dot_servers = []
+            doh_servers = []
+            nodes = []
+
+        cands2, res2 = network.get_candidate_ips(FallbackConfig(), "example.com")
+        self.assertEqual(cands2, ["9.9.9.9"])
+        self.assertIn("SmartDNS (DoT)", str(res2))
+
+    def test_cli_print_dns_results_dot_tag(self):
+        import ag as ag_cli
+        import sys
+        from io import StringIO
+        buf = StringIO()
+        res_info = network.ResolutionResult(
+            "ok",
+            [{"server": "tls://1.1.1.1", "dns_ip": "1.1.1.1", "ips": ["1.2.3.4"], "error": None, "dot": True}],
+            ["1.2.3.4"],
+            [],
+        )
+        with patch.object(sys, "stdout", buf):
+            ag_cli._print_dns_results(res_info)
+        self.assertIn("DoT tls://1.1.1.1 (1.1.1.1)", buf.getvalue())
 
 
 if __name__ == "__main__":

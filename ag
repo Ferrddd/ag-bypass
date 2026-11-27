@@ -40,7 +40,7 @@ def _req_admin(action: str):
 def _print_dns_results(res_info, indent="      "):
     for r in res_info.dns_results:
         srv = r["server"]
-        tag = "DoH" if r.get("doh") else "DNS"
+        tag = "DoH" if r.get("doh") else ("DoT" if r.get("dot") else "DNS")
         if r["ips"]:
             ip_desc = f" ({r['dns_ip']})" if r.get("dns_ip") and r["dns_ip"] != srv else ""
             print(f"{indent}{C_GREEN}[✓]{C_RESET} {tag} {srv}{ip_desc}: получено {len(r['ips'])} IP ({', '.join(r['ips'])})")

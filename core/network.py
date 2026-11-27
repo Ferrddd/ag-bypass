@@ -1,9 +1,13 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import json
 import random
 import socket
 import ssl
 import struct
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
 
 # =====================================================================
@@ -76,9 +80,37 @@ def _parse_dns_response(data: bytes, qid: int) -> list[str]:
         return []
 
 
-def query_a_records(dns_ip: str | None, domain: str, port: int = 53, timeout: float = 3.0, retries: int = 2) -> list[str]:
+def _build_dns_query(domain: str, qid: int | None = None) -> tuple[bytes, int] | None:
     clean = (domain or "").strip().strip(".")
-    if not dns_ip or not clean:
+    if not clean:
+        return None
+    try:
+        idna_dom = clean.encode("idna").decode("ascii")
+        parts = idna_dom.split(".")
+        if any(len(p) == 0 or len(p) > 63 for p in parts):
+            return None
+        qname = b"".join(bytes([len(p)]) + p.encode("ascii") for p in parts) + b"\x00"
+        if len(qname) > 255:
+            return None
+    except Exception:
+        return None
+    q_id = random.randint(1, 65535) if qid is None else int(qid)
+    pkt = struct.pack("!HHHHHH", q_id, 0x0100, 1, 0, 0, 0) + qname + struct.pack("!HH", 1, 1)
+    return pkt, q_id
+
+
+def _recv_exact(sock, n: int) -> bytes:
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            break
+        buf.extend(chunk)
+    return bytes(buf)
+
+
+def query_a_records(dns_ip: str | None, domain: str, port: int = 53, timeout: float = 3.0, retries: int = 2) -> list[str]:
+    if not dns_ip or not _build_dns_query(domain, qid=0):
         return []
     try:
         p = int(port)
@@ -86,20 +118,12 @@ def query_a_records(dns_ip: str | None, domain: str, port: int = 53, timeout: fl
             return []
     except (ValueError, TypeError):
         return []
-    try:
-        idna_dom = clean.encode("idna").decode("ascii")
-        parts = idna_dom.split(".")
-        if any(len(p) == 0 or len(p) > 63 for p in parts):
-            return []
-        qname = b"".join(bytes([len(p)]) + p.encode("ascii") for p in parts) + b"\x00"
-        if len(qname) > 255:
-            return []
-    except Exception:
-        return []
 
     for _ in range(max(1, retries)):
-        qid = random.randint(1, 65535)
-        pkt = struct.pack("!HHHHHH", qid, 0x0100, 1, 0, 0, 0) + qname + struct.pack("!HH", 1, 1)
+        built = _build_dns_query(domain)
+        if not built:
+            return []
+        pkt, qid = built
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
                 s.settimeout(timeout)
@@ -137,35 +161,162 @@ DEFAULT_DOH_SERVERS = [
     "https://dns.google/resolve",
 ]
 
+DEFAULT_DOT_SERVERS = [
+    "tls://1.1.1.1",
+    "tls://dns.google",
+]
+
+
+def _extract_valid_ipv4s(candidates: list[str]) -> list[str]:
+    ips = []
+    for raw in candidates:
+        ip = str(raw or "").strip()
+        if not _is_invalid_ip(ip) and ip not in ips:
+            try:
+                socket.inet_aton(ip)
+                ips.append(ip)
+            except OSError:
+                pass
+    return ips
+
+
+def _is_dot_server(server: str) -> bool:
+    s = (server or "").strip().lower()
+    if s.startswith("tls://"):
+        return True
+    return not s.startswith(("http://", "https://")) and s.endswith(":853")
+
+
+def _parse_dot_target(target: str, default_port: int = 853) -> tuple[str, int, str] | None:
+    raw = (target or "").strip()
+    if not raw or raw.lower().startswith(("http://", "https://")):
+        return None
+    normalized = raw if "://" in raw else f"tls://{raw}"
+    try:
+        parsed = urllib.parse.urlsplit(normalized)
+    except Exception:
+        return None
+    if parsed.scheme.lower() != "tls" or not parsed.hostname:
+        return None
+    try:
+        p = parsed.port if parsed.port is not None else int(default_port)
+    except (ValueError, TypeError):
+        return None
+    if not (1 <= p <= 65535):
+        return None
+    sni = parsed.fragment.strip() if parsed.fragment else parsed.hostname
+    return parsed.hostname, p, sni
+
+
+def query_dot_server(target: str, domain: str, port: int = 853, timeout: float = 3.0) -> list[str]:
+    """Резолвит A-записи через DNS over TLS (DoT, RFC 7858)."""
+    parsed = _parse_dot_target(target, default_port=port)
+    if not parsed:
+        return []
+    host, p, sni = parsed
+    dns_ip = resolve_target(host)
+    built = _build_dns_query(domain)
+    if not dns_ip or not built:
+        return []
+    pkt, qid = built
+    framed = struct.pack("!H", len(pkt)) + pkt
+    try:
+        ctx = ssl.create_default_context()
+        try:
+            ctx.set_alpn_protocols(["dot"])
+        except Exception:
+            pass
+        with socket.create_connection((dns_ip, p), timeout=timeout) as raw:
+            with ctx.wrap_socket(raw, server_hostname=sni) as tls_sock:
+                tls_sock.settimeout(timeout)
+                tls_sock.sendall(framed)
+                hdr = _recv_exact(tls_sock, 2)
+                if len(hdr) < 2:
+                    return []
+                msg_len = struct.unpack("!H", hdr)[0]
+                if msg_len < 12 or msg_len > 65535:
+                    return []
+                resp = _recv_exact(tls_sock, msg_len)
+                return _parse_dns_response(resp, qid)
+    except Exception:
+        return []
+
+
+def query_all_dot_servers(servers: list[str], domain: str, port: int = 853, timeout: float = 3.0) -> list[dict]:
+    cleaned = list(dict.fromkeys(s.strip() for s in (servers or []) if s and s.strip()))
+    if not cleaned:
+        return []
+
+    def _run_dot(s: str) -> dict:
+        try:
+            parsed = _parse_dot_target(s, default_port=port)
+            dns_ip = resolve_target(parsed[0]) if parsed else None
+            ips = query_dot_server(s, domain, port=port, timeout=timeout)
+            err = None if ips else f"DoT {s} не вернул A-записей ({timeout}с)"
+            return {"server": s, "dns_ip": dns_ip or s, "ips": ips, "error": err, "dot": True}
+        except Exception as e:
+            return {"server": s, "dns_ip": s, "ips": [], "error": str(e), "dot": True}
+
+    with ThreadPoolExecutor(max_workers=min(len(cleaned), 4)) as ex:
+        return list(ex.map(_run_dot, cleaned))
+
 
 def query_doh_server(url: str, domain: str, timeout: float = 3.0) -> list[str]:
-    """Резолвит A-записи через DNS over HTTPS (DoH) без сторонних зависимостей."""
-    import json
-    import urllib.request
+    """Резолвит A-записи через DNS over HTTPS (DoH: JSON API и RFC 8484 wire-format)."""
     clean_url = (url or "").strip()
     clean_dom = (domain or "").strip().strip(".")
-    if not clean_url or not clean_dom:
+    if not clean_url or not clean_dom or not clean_url.lower().startswith(("http://", "https://")):
         return []
+
     sep = "&" if "?" in clean_url else "?"
-    full_url = f"{clean_url}{sep}name={clean_dom}&type=A"
-    req = urllib.request.Request(
+    encoded_dom = urllib.parse.quote(clean_dom, safe="")
+    full_url = f"{clean_url}{sep}name={encoded_dom}&type=A"
+    json_req = urllib.request.Request(
         full_url,
         headers={"Accept": "application/dns-json, application/json", "User-Agent": "ag-bypass/1.0"},
     )
+    try_wire = False
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            ips = []
-            for ans in data.get("Answer", []):
-                if ans.get("type") == 1:
-                    ip = str(ans.get("data", "")).strip()
-                    if not _is_invalid_ip(ip) and ip not in ips:
-                        try:
-                            socket.inet_aton(ip)
-                            ips.append(ip)
-                        except OSError:
-                            pass
-            return ips
+        with urllib.request.urlopen(json_req, timeout=timeout) as resp:
+            raw_body = resp.read()
+        try:
+            data = json.loads(raw_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            # Server may have returned binary DNS message directly
+            if ips := _parse_dns_response(raw_body, 0):
+                return ips
+            try_wire = True
+        else:
+            if isinstance(data, dict) and ("Answer" in data or "Status" in data):
+                return _extract_valid_ipv4s(
+                    [ans.get("data", "") for ans in data.get("Answer", []) if isinstance(ans, dict) and ans.get("type") == 1]
+                )
+            try_wire = True
+    except urllib.error.HTTPError:
+        try_wire = True
+    except Exception:
+        return []
+
+    if not try_wire:
+        return []
+
+    built = _build_dns_query(clean_dom, qid=0)
+    if not built:
+        return []
+    pkt, qid = built
+    wire_req = urllib.request.Request(
+        clean_url,
+        data=pkt,
+        method="POST",
+        headers={
+            "Content-Type": "application/dns-message",
+            "Accept": "application/dns-message",
+            "User-Agent": "ag-bypass/1.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(wire_req, timeout=timeout) as resp:
+            return _parse_dns_response(resp.read(), qid)
     except Exception:
         return []
 
@@ -198,40 +349,62 @@ class ResolutionResult:
 
 def get_candidate_ips(config, domain: str) -> tuple[list[str], ResolutionResult]:
     all_servers = getattr(config, "smart_dns_servers", []) or []
-    udp_servers = [s for s in all_servers if not s.startswith("http://") and not s.startswith("https://")]
-    doh_servers = [s for s in all_servers if s.startswith("http://") or s.startswith("https://")]
+    cfg_doh = list(getattr(config, "doh_servers", None) or [])
+    cfg_dot = list(getattr(config, "dot_servers", None) or [])
+    timeout = getattr(config, "smart_dns_timeout", 3.0)
+    dot_port = getattr(config, "smart_dns_dot_port", 853)
 
-    dns_results = query_all_dns_servers(
-        udp_servers, domain, port=getattr(config, "smart_dns_port", 53), timeout=getattr(config, "smart_dns_timeout", 3.0)
-    )
+    doh_servers = [s for s in all_servers if s.lower().startswith(("http://", "https://"))]
+    dot_from_smart = [s for s in all_servers if _is_dot_server(s)]
+    udp_servers = [s for s in all_servers if s not in doh_servers and s not in dot_from_smart]
+    dot_servers = list(dict.fromkeys(dot_from_smart + cfg_dot))
+    if not all_servers and cfg_doh:
+        doh_servers = list(cfg_doh)
 
+    dns_results = list(query_all_dns_servers(
+        udp_servers, domain, port=getattr(config, "smart_dns_port", 53), timeout=timeout
+    ))
+    if dot_servers:
+        dns_results.extend(query_all_dot_servers(dot_servers, domain, port=dot_port, timeout=timeout))
     if doh_servers:
-        doh_results = query_all_doh_servers(doh_servers, domain, timeout=getattr(config, "smart_dns_timeout", 3.0))
-        dns_results.extend(doh_results)
+        dns_results.extend(query_all_doh_servers(doh_servers, domain, timeout=timeout))
 
     dns_ips = list(dict.fromkeys(ip for r in dns_results for ip in r["ips"]))
     working = [r for r in dns_results if r["ips"]]
 
     doh_fallback_used = False
-    if not dns_ips and not doh_servers and (all_servers or getattr(config, "doh_servers", None)):
-        cfg_doh = getattr(config, "doh_servers", None) or DEFAULT_DOH_SERVERS
-        fallback_results = query_all_doh_servers(cfg_doh, domain, timeout=getattr(config, "smart_dns_timeout", 3.0))
-        if any(r["ips"] for r in fallback_results):
-            dns_results.extend(fallback_results)
+    dot_fallback_used = False
+    if not dns_ips and not doh_servers and (all_servers or cfg_doh):
+        fallback_doh = query_all_doh_servers(cfg_doh or DEFAULT_DOH_SERVERS, domain, timeout=timeout)
+        dns_results.extend(fallback_doh)
+        if any(r["ips"] for r in fallback_doh):
             dns_ips = list(dict.fromkeys(ip for r in dns_results for ip in r["ips"]))
             working = [r for r in dns_results if r["ips"]]
             doh_fallback_used = True
+
+    if not dns_ips and not dot_servers and (all_servers or doh_servers):
+        fallback_dot = query_all_dot_servers(DEFAULT_DOT_SERVERS, domain, port=dot_port, timeout=timeout)
+        dns_results.extend(fallback_dot)
+        if any(r["ips"] for r in fallback_dot):
+            dns_ips = list(dict.fromkeys(ip for r in dns_results for ip in r["ips"]))
+            working = [r for r in dns_results if r["ips"]]
+            dot_fallback_used = True
 
     nodes = list(getattr(config, "nodes", []))
     combined = list(dict.fromkeys(dns_ips + nodes))
 
     if working:
-        prefix = "SmartDNS (DoH)" if doh_fallback_used else "SmartDNS"
+        if doh_fallback_used:
+            prefix = "SmartDNS (DoH)"
+        elif dot_fallback_used:
+            prefix = "SmartDNS (DoT)"
+        else:
+            prefix = "SmartDNS"
         summary = f"{prefix} ({len(working)}/{len(dns_results)} ответили, найдено {len(dns_ips)} IP)" + (f" + узлы ({len(nodes)})" if nodes else "")
     elif nodes:
-        summary = f"Узлы из config.json" + (f" (все DNS/DoH не ответили)" if dns_results else "")
+        summary = "Узлы из config.json" + (" (все DNS/DoT/DoH не ответили)" if dns_results else "")
     elif dns_results:
-        summary = f"Все настроенные DNS-серверы ({len(dns_results)}) не вернули записей"
+        summary = f"Все настроенные DNS/DoT/DoH-серверы ({len(dns_results)}) не вернули записей"
     else:
         summary = "DNS-серверы не настроены и список nodes пуст"
 
