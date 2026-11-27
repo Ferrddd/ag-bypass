@@ -557,14 +557,16 @@ class TestCLI(unittest.TestCase):
     def test_query_doh_network_error(self, mock_urlopen):
         self.assertEqual(network.query_doh_server("https://1.1.1.1/dns-query", "example.com"), [])
 
+    @patch("core.network.query_all_dot_servers")
     @patch("core.network.query_all_doh_servers")
     @patch("core.network.query_all_dns_servers")
-    def test_get_candidate_ips_doh_fallback_success(self, mock_dns, mock_doh):
-        mock_dns.return_value = [{"server": "bad.dns.ru", "dns_ip": "1.2.3.4", "ips": [], "error": "timeout"}]
+    def test_get_candidate_ips_doh_fallback_success(self, mock_dns, mock_doh, mock_dot):
+        mock_dns.return_value = [{"server": "1.2.3.4", "dns_ip": "1.2.3.4", "ips": [], "error": "timeout"}]
+        mock_dot.return_value = []
         mock_doh.return_value = [{"server": "https://1.1.1.1/dns-query", "dns_ip": "https://1.1.1.1/dns-query", "ips": ["159.194.200.1"], "error": None, "doh": True}]
 
         class DummyConfig:
-            smart_dns_servers = ["bad.dns.ru"]
+            smart_dns_servers = ["1.2.3.4"]
             nodes = []
 
         cands, res = network.get_candidate_ips(DummyConfig(), "example.com")
@@ -724,15 +726,40 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(mock_doh.call_args.args[0], ["https://dns.google/resolve"])
         self.assertEqual(cands, ["5.6.7.8", "1.2.3.4"])
 
+        # Now verify bare domain auto-expands to DoT (tls://host) + DoH (https://host/dns-query),
+        # while bare IP does not, and explicit custom DoH path suppresses /dns-query duplicate
+        mock_dns.reset_mock()
+        mock_doh.reset_mock()
+        mock_dot.reset_mock()
+        mock_dns.return_value = [{"server": "dns.geohide.ru", "dns_ip": "1.2.3.4", "ips": [], "error": "timeout"}]
+        mock_dot.return_value = [{"server": "tls://dns.geohide.ru", "dns_ip": "1.2.3.4", "ips": ["7.7.7.7"], "error": None, "dot": True}]
+        mock_doh.return_value = [{"server": "https://dns.geohide.ru/dns-query", "dns_ip": "https://dns.geohide.ru/dns-query", "ips": ["8.8.4.4"], "error": None, "doh": True}]
+
+        class DomainAutoConfig:
+            smart_dns_servers = ["dns.geohide.ru", "45.155.204.190", "dns.google", "https://dns.google/resolve"]
+            dot_servers = []
+            doh_servers = []
+            nodes = []
+
+        cands_dom, _ = network.get_candidate_ips(DomainAutoConfig(), "example.com")
+        self.assertEqual(mock_dns.call_args.args[0], ["dns.geohide.ru", "45.155.204.190", "dns.google"])
+        self.assertEqual(mock_dot.call_args.args[0], ["tls://dns.geohide.ru", "tls://dns.google"])
+        self.assertEqual(
+            mock_doh.call_args.args[0],
+            ["https://dns.google/resolve", "https://dns.geohide.ru/dns-query"],
+        )
+        self.assertEqual(cands_dom, ["7.7.7.7", "8.8.4.4"])
+
         # Now verify DoT fallback when UDP and DoH fail
         mock_dns.reset_mock()
         mock_doh.reset_mock()
         mock_dot.reset_mock()
+        mock_dns.return_value = [{"server": "1.2.3.4", "dns_ip": "1.2.3.4", "ips": [], "error": "timeout"}]
         mock_doh.return_value = [{"server": "https://1.1.1.1/dns-query", "dns_ip": "https://1.1.1.1/dns-query", "ips": [], "error": "fail", "doh": True}]
         mock_dot.return_value = [{"server": "tls://1.1.1.1", "dns_ip": "1.1.1.1", "ips": ["9.9.9.9"], "error": None, "dot": True}]
 
         class FallbackConfig:
-            smart_dns_servers = ["bad.dns.ru"]
+            smart_dns_servers = ["1.2.3.4"]
             dot_servers = []
             doh_servers = []
             nodes = []

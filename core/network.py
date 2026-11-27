@@ -187,6 +187,25 @@ def _is_dot_server(server: str) -> bool:
     return not s.startswith(("http://", "https://")) and s.endswith(":853")
 
 
+def _extract_plain_domain(server: str) -> str | None:
+    """Return server hostname if it is a bare domain (not an IP, URL, or host:port)."""
+    s = (server or "").strip().rstrip(".")
+    if not s or "://" in s or "/" in s or ":" in s or "." not in s or any(c.isspace() for c in s):
+        return None
+    try:
+        socket.inet_aton(s)
+        return None
+    except OSError:
+        return s
+
+
+def _url_hostname(url: str) -> str:
+    try:
+        return (urllib.parse.urlsplit(url).hostname or "").strip().lower()
+    except Exception:
+        return ""
+
+
 def _parse_dot_target(target: str, default_port: int = 853) -> tuple[str, int, str] | None:
     raw = (target or "").strip()
     if not raw or raw.lower().startswith(("http://", "https://")):
@@ -352,29 +371,52 @@ def get_candidate_ips(config, domain: str) -> tuple[list[str], ResolutionResult]
     cfg_doh = list(getattr(config, "doh_servers", None) or [])
     cfg_dot = list(getattr(config, "dot_servers", None) or [])
     timeout = getattr(config, "smart_dns_timeout", 3.0)
+    udp_port = getattr(config, "smart_dns_port", 53)
     dot_port = getattr(config, "smart_dns_dot_port", 853)
 
-    doh_servers = [s for s in all_servers if s.lower().startswith(("http://", "https://"))]
-    dot_from_smart = [s for s in all_servers if _is_dot_server(s)]
-    udp_servers = [s for s in all_servers if s not in doh_servers and s not in dot_from_smart]
-    dot_servers = list(dict.fromkeys(dot_from_smart + cfg_dot))
+    explicit_doh = [s for s in all_servers if s.lower().startswith(("http://", "https://"))]
+    explicit_dot_from_smart = [s for s in all_servers if _is_dot_server(s)]
+    udp_servers = [s for s in all_servers if s not in explicit_doh and s not in explicit_dot_from_smart]
     if not all_servers and cfg_doh:
-        doh_servers = list(cfg_doh)
+        explicit_doh = list(cfg_doh)
+    explicit_dot = list(dict.fromkeys(explicit_dot_from_smart + cfg_dot))
 
-    dns_results = list(query_all_dns_servers(
-        udp_servers, domain, port=getattr(config, "smart_dns_port", 53), timeout=timeout
-    ))
-    if dot_servers:
-        dns_results.extend(query_all_dot_servers(dot_servers, domain, port=dot_port, timeout=timeout))
-    if doh_servers:
-        dns_results.extend(query_all_doh_servers(doh_servers, domain, timeout=timeout))
+    # Automatically derive DoT (tls://host) and DoH (https://host/dns-query) for bare domain entries
+    plain_domains = [d for s in udp_servers if (d := _extract_plain_domain(s))]
+    explicit_dot_hosts = {
+        parsed[0].lower()
+        for s in explicit_dot
+        if (parsed := _parse_dot_target(s, default_port=dot_port))
+    }
+    explicit_doh_hosts = {h for s in explicit_doh if (h := _url_hostname(s))}
 
+    auto_dot = [f"tls://{d}" for d in plain_domains if d.lower() not in explicit_dot_hosts]
+    auto_doh = [f"https://{d}/dns-query" for d in plain_domains if d.lower() not in explicit_doh_hosts]
+
+    dot_servers = list(dict.fromkeys(explicit_dot + auto_dot))
+    doh_servers = list(dict.fromkeys(explicit_doh + auto_doh))
+
+    udp_results: list[dict] = []
+    dot_results: list[dict] = []
+    doh_results: list[dict] = []
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        fut_udp = ex.submit(query_all_dns_servers, udp_servers, domain, udp_port, timeout) if udp_servers else None
+        fut_dot = ex.submit(query_all_dot_servers, dot_servers, domain, dot_port, timeout) if dot_servers else None
+        fut_doh = ex.submit(query_all_doh_servers, doh_servers, domain, timeout) if doh_servers else None
+        if fut_udp:
+            udp_results = list(fut_udp.result())
+        if fut_dot:
+            dot_results = list(fut_dot.result())
+        if fut_doh:
+            doh_results = list(fut_doh.result())
+
+    dns_results = udp_results + dot_results + doh_results
     dns_ips = list(dict.fromkeys(ip for r in dns_results for ip in r["ips"]))
     working = [r for r in dns_results if r["ips"]]
 
     doh_fallback_used = False
     dot_fallback_used = False
-    if not dns_ips and not doh_servers and (all_servers or cfg_doh):
+    if not dns_ips and not explicit_doh and (all_servers or cfg_doh):
         fallback_doh = query_all_doh_servers(cfg_doh or DEFAULT_DOH_SERVERS, domain, timeout=timeout)
         dns_results.extend(fallback_doh)
         if any(r["ips"] for r in fallback_doh):
@@ -382,13 +424,15 @@ def get_candidate_ips(config, domain: str) -> tuple[list[str], ResolutionResult]
             working = [r for r in dns_results if r["ips"]]
             doh_fallback_used = True
 
-    if not dns_ips and not dot_servers and (all_servers or doh_servers):
-        fallback_dot = query_all_dot_servers(DEFAULT_DOT_SERVERS, domain, port=dot_port, timeout=timeout)
-        dns_results.extend(fallback_dot)
-        if any(r["ips"] for r in fallback_dot):
-            dns_ips = list(dict.fromkeys(ip for r in dns_results for ip in r["ips"]))
-            working = [r for r in dns_results if r["ips"]]
-            dot_fallback_used = True
+    if not dns_ips and (all_servers or explicit_doh):
+        fallback_dot_list = [s for s in DEFAULT_DOT_SERVERS if s not in dot_servers]
+        if fallback_dot_list:
+            fallback_dot = query_all_dot_servers(fallback_dot_list, domain, port=dot_port, timeout=timeout)
+            dns_results.extend(fallback_dot)
+            if any(r["ips"] for r in fallback_dot):
+                dns_ips = list(dict.fromkeys(ip for r in dns_results for ip in r["ips"]))
+                working = [r for r in dns_results if r["ips"]]
+                dot_fallback_used = True
 
     nodes = list(getattr(config, "nodes", []))
     combined = list(dict.fromkeys(dns_ips + nodes))
