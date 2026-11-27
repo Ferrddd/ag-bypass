@@ -10,9 +10,9 @@
 - **Кроссплатформенность:** Нативная поддержка Windows 10/11 (`hosts`, `HKCU\Environment`, `Task Scheduler`, `ipconfig /flushdns`), Linux (`/etc/hosts`, `environment.d`, `systemd`, `resolvectl`) и macOS (`/etc/hosts`, `dscacheutil`).
 - **Без локальных демонов:** Не держит в памяти постоянно работающие proxy-серверы. Система обращается к узлам обхода напрямую через быстрое SNI-проксирование.
 - **Точечная маршрутизация (Split-DNS & Multi-Node):** Через `hosts` перенаправляются исключительно рабочие и авторизационные домены Antigravity с поддержкой записи топ-2 рабочих IP для мгновенного сокет-фейловера на уровне ОС (Happy Eyeballs RFC 8305).
-- **SmartDNS + DoH Fallback:** Резолвит актуальные IP через SmartDNS (UDP 53) с автоматическим защищенным DoH (DNS over HTTPS на базе `urllib`) при перехвате или сбоях провайдерского DNS, тестирует TLS 443 хэндшейк с фильтрацией ошибок прокси (502/503/403) и ранжирует узлы по минимальному пингу.
+- **SmartDNS + DoT / DoH:** Параллельно резолвит IP через обычный UDP DNS, **DoT** (DNS over TLS, порт 853) и **DoH** (DNS over HTTPS: JSON + RFC 8484). Для каждого домена в `smart_dns.servers` автоматически пробуются и DoT (`tls://<домен>`), и DoH (`https://<домен>/dns-query`), а также поддерживаются явные URL с нестандартными путями (`https://.../resolve`, `doh_servers`, `dot_servers`) и резервный fallback. Затем проверяет каждый IP через TLS 443 хэндшейк с фильтрацией ошибок прокси (502/503/403) и выбирает узлы с минимальным пингом.
 - **Авто-патчинг клиента:** Находит все установленные клиенты (и CLI `agy`, и GUI `language_server` / `language_server.exe`: `Antigravity.app/Contents/Resources/bin/language_server` на macOS с переподписью `codesign`, `/opt/antigravity/resources/bin/language_server` на Linux, `resources\bin\language_server.exe` на Windows) и безопасно модифицирует проверку доступности региона (`ineligible` $\to$ `inexigible`, 10 байт в 10 байт) без создания лишних `.bak`-копий.
-- **Фоновый мониторинг (Systemd Timer / Task Scheduler):** Проверяет доступность узла каждые 2 минуты (настраивается в `config.json`) и при падении автоматически бесшовно переключается на живой сервер без перезапуска клиента.
+- **Фоновый мониторинг (Systemd Timer / Task Scheduler):** Проверяет доступность узла каждые 2 минуты (на Windows запускается бесшумно через `pythonw.exe` без всплывающих окон терминала и с правами `/rl HIGHEST`), а `ag off` / `ag on` отключают и включают мониторинг без повторной установки.
 
 ---
 
@@ -24,7 +24,7 @@
 
 1. **Windows 10/11 (`ag-bypass-windows.zip`):**
    - Скачайте и распакуйте архив.
-   - В открытой папке запустите **PowerShell или CMD от имени Администратора**:
+   - Запустите **`install.bat`** (двойным кликом — скрипт сам запросит права Администратора через UAC, или из CMD/PowerShell от Администратора):
      ```bat
      .\install.bat
      ```
@@ -84,7 +84,7 @@ ag status
 ```bash
 sudo ag off
 ```
-Бесследно удаляет блок записей из `/etc/hosts` и сбрасывает кэш DNS.
+Бесследно удаляет блок записей из `hosts`, сбрасывает кэш DNS и приостанавливает фоновый мониторинг (при следующем `ag on` он включится обратно автоматически).
 
 ---
 
@@ -118,7 +118,7 @@ sudo ag off
 }
 ```
 
-- **`smart_dns.servers`**: Список хостов или IP-адресов DNS-серверов. Все серверы опрашиваются параллельно, собираются все возвращённые IP-адреса, и каждый проверяется на работоспособность TLS SNI-проксирования. Также поддерживается одиночный `"host"` / `"fallback_ip"`.
+- **`smart_dns.servers`**: Общий список серверов DNS: домены (`dns1.example.com`), IP (`1.2.3.4`), DoT (`tls://...`) или DoH (`https://...`). Для каждого обычного домена автоматически пробуются UDP 53, DoT (`tls://...`) и DoH (`https://.../dns-query`). При необходимости можно также задать отдельные поля `doh_servers`, `dot_servers` или `smart_dns.dot_port`.
 - **`nodes`**: Список статических IP-адресов прокси-узлов (используются напрямую или объединяются с адресами от DNS).
 - **`domains`**: Список доменов, которые направляются на прокси-узлы (рабочие эндпоинты Cloud Code).
 - **`binary_path`**: `"auto"` для автопоиска в каталогах Antigravity (`AppData\Local\Programs\antigravity\resources\bin\language_server.exe` на Windows, `/Applications/Antigravity.app/Contents/Resources/bin/language_server` на macOS), `~/.local/bin/agy`, `PATH` или каталогах Windows/Linux/macOS, либо прямой путь к файлу или `.app`-бандлу.
